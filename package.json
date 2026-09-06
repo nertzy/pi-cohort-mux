@@ -1,0 +1,22 @@
+{
+  "name": "pi-cohort-mux",
+  "version": "0.0.0",
+  "description": "Visible multiplexer execution backends for pi-cohort",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "author": "Grant Hutchins",
+  "license": "MIT",
+  "repository": "github:nertzy/pi-cohort-mux"
+}
