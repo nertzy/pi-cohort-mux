@@ -10,8 +10,8 @@ This document transfers the current discovery and decisions into the new reposit
 
 - Design discovery is complete enough to start the new repository.
 - No execution-backend implementation has been added to `pi-cohort`.
-- No `pi-cohort-mux` repository or package has been created yet.
-- The donor bridge remains the active local integration.
+- `nertzy/pi-cohort-mux` exists as a **public** GitHub repository; its npm package remains private and unpublished.
+- Draft PR #1 carries the companion prototype; the donor bridge remains the active local integration.
 - The current `pi-cohort` design worktree is based on `origin/main` at `225ab55` (`5.3.1`) on branch `mux-execution-backends`.
 - A context draft with detailed file and line references exists at `doc/specs/2026-09-06-mux-execution-backends.md` in that worktree.
 
@@ -29,20 +29,20 @@ Owns orchestration and the public execution-backend SPI:
 - structured output and output-file behavior;
 - model fallback policy;
 - foreground and durable async coordination;
-- run/session identity, persisted status, and result aggregation;
+- run/session identity, persisted status, ready/settled/result session-log semantics, and result aggregation;
+- mux-independent bidirectional child control: interrupt, shutdown, steer, and session rebound;
 - backend selection and configuration.
 
 Native child-process execution remains built in and backward compatible.
 
 ### `nertzy/pi-cohort-mux`
 
-Begins as Grant's prototype companion package and owns mux transport:
+Is Grant's prototype companion package and owns mux transport only:
 
 - mux availability and capability detection;
 - creating and identifying panes/surfaces;
 - launching children without exposing secrets;
-- observing lifecycle and returning portable events/results;
-- interrupting children where supported;
+- native mux lifecycle/entity facts and opaque reattach/display metadata;
 - closing successful panes and retaining diagnostic panes;
 - cmux and tmux adapters in the first releasable scope;
 - a documented Herdr adapter design, with implementation deferred until its API is verified.
@@ -61,7 +61,7 @@ Treat this as donor and migration code, not the permanent package:
 ## Decisions already made
 
 1. **Packaging:** `pi-cohort` exposes a small public SPI; `pi-cohort-mux` is a separately installed companion package.
-2. **Prototype ownership:** create a new `nertzy/pi-cohort-mux` repository now. Do not rename the existing GitHub fork.
+2. **Prototype ownership (ratified):** `nertzy/pi-cohort-mux` already exists as a public repository and draft PR #1 carries the prototype. Do not rename the existing GitHub fork.
 3. **Upstream path:** prototype under `nertzy`, then propose transfer after the integration and conformance tests prove the boundary.
 4. **Installation:** users install both packages. The companion should register automatically; ordinary configuration must not contain JavaScript module paths or adapter imports.
 5. **Default selection:** when the companion is installed and a supported active mux is detected, use it automatically. Fall back to native execution when no mux is available.
@@ -69,19 +69,19 @@ Treat this as donor and migration code, not the permanent package:
 7. **Initial adapters:** implement cmux and tmux. Document how Herdr maps to the SPI, but defer its implementation until its public lifecycle/socket contract is verified. Zellij and WezTerm are later candidates despite existing donor support.
 8. **Mode parity:** support pane-backed foreground and async children through the same backend contract. Keep Cohort's detached async runner as the durable coordinator.
 9. **Pane retention:** close a pane only after successful result delivery. Retain failed, interrupted, paused, and attention-needed panes for inspection and explicit cleanup.
-10. **SPI scope:** require only launch, lifecycle events, result capture, interruption, and cleanup. Carry opaque pane/session metadata for observability and adapter-owned controls. Screen scraping, focusing, and arbitrary interactive input are not core Cohort contracts in version one.
-11. **Repository timing:** the prototype repository can be created and exercised against a development SPI immediately. A stable adapter release and normal installation depend on the SPI landing in a released `pi-cohort`; repository creation does not.
+10. **SPI scope (ratified):** adapters provide only surface launch, mux lifecycle, reattach metadata, and close/retain cleanup. Core owns session-log parsing/results and the mux-independent bidirectional child control socket. Screen scraping, focus, and arbitrary interactive input are not v1 contracts.
+11. **Repository timing (ratified):** the public GitHub repository already exists and draft PR #1 carries its prototype. The npm package remains private/unpublished; stable adapter release and normal installation await the landed core SPI and conformance evidence.
 12. **Foreground/async workflow issue:** the current local bridge sometimes reroutes an explicitly foreground Cohort dispatch into a detached cmux pane. Do not let that block this project now, but record preservation of caller-requested execution semantics as a conformance requirement.
 
 ## Target architecture
 
-Cohort compiles each logical child into a backend-neutral execution request. That request contains the already-resolved command, arguments, working directory, run/session identity, artifact locations, lifecycle hooks, and cancellation signals needed to execute one child. It must preserve the existing Pi argument and intercom environment contracts.
+Cohort compiles each logical child into a backend-neutral launch request containing the already-resolved command, arguments, required `cwd`, run/session identity, artifact locations, and cancellation signals. It preserves Pi arguments and intercom environment contracts. Worktree metadata is optional awareness; existing `worktreeSetupHook` remains the setup owner and v1 adds no setup/creation API.
 
-A registered backend executes that compiled request and returns a backend-neutral lifecycle/result stream. Cohort remains responsible for interpreting Pi JSONL events, model fallback, acceptance, aggregation, persistence, and orchestration. An adapter must not implement chains, fanout, personas, worktrees, output contracts, or acceptance.
+A registered adapter launches a surface and reports mux lifecycle, reattach metadata, and close/retain cleanup only. It does not return Cohort lifecycle/results: Core injects the child reporting extension through `runtimeExtensions`, parses/replays the ordered session JSONL, applies fallback/acceptance/aggregation/persistence, and constructs durable results. This injection applies even with `--no-extensions`.
 
-The native backend wraps today's direct `child_process.spawn` behavior. The mux companion registers cmux and tmux backends. The same child contract is used from foreground execution and from the child-execution portion of the detached async runner; the companion does not replace the runner itself.
+Pi 0.85.0 cannot combine TUI and `--mode json`. Interactive launches pre-create an empty `--session` JSONL file; native stdout JSONL mode remains unchanged. Pi entries plus core-owned `ready`, `settled`, `result`, and `control` entries are the durable interactive result stream. `agent_settled` leaves the child alive; core shuts it down only after durable delivery. Entry-granularity progress is accepted in v1.
 
-Adapters expose an availability result and a small capability set. Version-one required capabilities are deliberately narrow. Backend-specific metadata may identify a pane, socket, session, or runtime, but Cohort treats it as opaque data except for display and persistence.
+The core-owned control socket is mux-independent: ready, interrupt (`ctx.abort`), shutdown (`ctx.shutdown`), steer, and session rebound. cmux hooks are optional corroborating awareness, tmux needs no hook, and neither polling nor screen scraping is a result source. Native mux facts, child/session facts, and unknown/no-activity stay provenance-distinct.
 
 ## Important pi-cohort seams
 
@@ -149,21 +149,21 @@ Reject any option that depends on private `src/...` imports, hard-coded installa
 
 ## Lifecycle requirements
 
-A conforming adapter must demonstrate:
+A conforming adapter supplies surface facts to an integrated core+adapter system, which must demonstrate:
 
 - child session and artifact identity is stable and returned to Cohort;
 - startup failures are distinguishable from child failures;
-- lifecycle events cannot be confused with terminal decoration or prompts;
-- interrupt is soft and leaves the run in an explicit paused/interrupted state;
+- lifecycle facts cannot be confused with terminal decoration or prompts;
+- core control (`ctx.abort`) produces an explicit paused/interrupted state;
 - cleanup happens after successful delivery, not merely after child exit;
-- failed launch, send, observation, finalization, and fallback paths clean temporary state predictably;
+- failed launch, native lifecycle observation, finalization, and fallback paths clean temporary state predictably;
 - retained diagnostic panes are reported to the user with an actionable handle;
 - parallel launches have deterministic result ordering and bounded resource usage;
 - nested Cohort runs preserve depth and intercom routing;
 - a parent exit does not destroy durable async coordination;
 - unavailable auto-selected adapters fall back to native, while an unavailable explicit selection fails.
 
-## First-release scope
+## Post-core adapter-release scope
 
 ### Included
 
@@ -185,22 +185,22 @@ A conforming adapter must demonstrate:
 - Zellij and WezTerm adapters;
 - screen-read/scraping APIs;
 - arbitrary input injection;
-- focus/takeover as a Cohort-level contract;
+- focus manipulation, screen capture, and arbitrary terminal input; `taken_over` detection/state remains core-owned and does not make input or focus part of the SPI;
 - mux-owned chain, fanout, acceptance, output, persona, or worktree behavior;
 - replacing Cohort's detached async coordinator;
 - archiving the donor fork before migration parity.
 
 ## Proposed implementation sequence
 
-### Phase 1: establish the prototype repository
+### Phase 1: prototype status and donor preparation
 
-- Create `nertzy/pi-cohort-mux` as an independent repository with its own package identity and license.
+- `nertzy/pi-cohort-mux` already exists publicly; keep its npm package private/unpublished and draft PR #1 as the prototype.
 - Record donor provenance and attribution before moving code.
 - Add a compatibility matrix covering Pi, `pi-cohort`, Node, cmux, and tmux versions.
 - Add test fixtures for a minimal fake backend and fake mux CLI.
 - Keep the repository unreleased while the SPI is provisional.
 
-### Phase 2: design and upstream the core SPI
+### Phase 2: core-only, mux-free SPI and reporting slice
 
 - Extract one backend-neutral child-execution contract in `pi-cohort`.
 - Wrap current native foreground execution without changing behavior.
@@ -211,15 +211,15 @@ A conforming adapter must demonstrate:
 
 ### Phase 3: prove registration and cmux
 
-- Implement automatic companion registration using the proven load-order-safe mechanism.
+- Implement automatic companion registration only after the core SPI is landed and its load-order-safe mechanism is proven.
 - Extract and refactor cmux transport behavior from the donor.
-- Preserve secure launcher handoff, structured completion, interruption, metadata, and cleanup.
-- Run the same logical conformance scenarios against native and cmux backends.
+- Preserve secure launcher handoff, native lifecycle/entity facts, opaque reattach metadata, and close/retain cleanup; integrate them with core reporting and control.
+- Run the same logical conformance scenarios against native and cmux backends; retain only final fallback failure.
 
 ### Phase 4: add tmux and mode parity
 
 - Implement tmux behind the same interface without adding backend-specific branches to Cohort.
-- Exercise foreground, async, parallel, nested, worktree, cancellation, output, acceptance, and model-fallback flows.
+- Exercise foreground, async, parallel, nested, worktree awareness, cancellation, output, acceptance, and model-fallback flows; preserve one surface per logical child.
 - Verify auto-selection and explicit overrides in nested-mux environments.
 
 ### Phase 5: migration and upstream proposal
@@ -235,7 +235,8 @@ A conforming adapter must demonstrate:
 ### Core contract
 
 - Native regression tests for current foreground and async behavior.
-- Contract tests for launch, event flow, result capture, interruption, cleanup, metadata, unavailable backends, and incompatible versions.
+- Public backend contract/conformance tests only for surface launch, mux lifecycle, reattach metadata, close/retain cleanup, unavailable backends, and incompatible versions.
+- Core tests for session-log reporting/result construction and bidirectional child control.
 - Tests proving `auto`, `native`, and named-backend selection.
 - Tests for both extension load orders, duplicate registration, and reload.
 - Windows and no-mux CI retain native behavior.
@@ -243,8 +244,9 @@ A conforming adapter must demonstrate:
 ### Adapter package
 
 - Unit tests use fake executables and sockets; they assert exact argument boundaries without printing secret-bearing environment values.
-- Lifecycle tests assert cleanup ordering for launch, send, poll, interrupt, result-delivery, and fallback failures.
-- Optional real-mux smoke tests exercise create, launch, observe, interrupt, and close.
+- Lifecycle tests assert cleanup ordering for create, launch, native event/reconcile, reattach, close/retain cleanup, and fallback failures.
+- Optional real-mux smoke tests exercise create, launch, native lifecycle events, reconcile, reattach, and close/retain cleanup.
+- Integrated end-to-end tests exercise core control and delivery ordering separately.
 - Skipped real-mux tests must report discovered example counts and the reason for skipping; zero exercised cases cannot be reported as a pass.
 - Foreground and async suites run the same behavioral matrix where their persistence expectations differ only at the Cohort coordinator layer.
 
@@ -259,7 +261,7 @@ At minimum, verify:
 - acceptance/reviewer gates;
 - model fallback;
 - nested intercom identities;
-- status, interruption, resume, and retained-pane metadata;
+- status, core control (interrupt and resume), and retained-pane metadata;
 - successful close-after-delivery and failure retention;
 - native fallback outside supported muxes.
 
@@ -282,7 +284,7 @@ Map verified operations onto the same required SPI. Record richer Herdr-only cap
 ## Known risks
 
 1. **No native cross-extension registry:** automatic installation may require a carefully versioned process-global protocol.
-2. **Interactive versus machine-readable execution:** Cohort currently consumes Pi JSONL; visible interactive panes must provide equivalent structured completion without scraping rendered output.
+2. **Interactive versus machine-readable execution (resolved):** Pi 0.85.0 makes TUI and `--mode json` mutually exclusive. Pre-created session JSONL plus core-owned entries is the durable interactive source; stdout JSONL remains native-only.
 3. **Secret propagation:** naive pane commands expose inherited credentials in logs and persisted metadata.
 4. **Foreground/async drift:** visible panes must not silently change completion, cancellation, or durability semantics.
 5. **Fork drift:** the bridge's copied persona/output/runtime logic can diverge from current Cohort while migration is in progress.
@@ -296,7 +298,7 @@ Resolve these through code/API inspection before implementation:
 
 - What exact registration mechanism works across separately installed Pi packages and both extension load orders?
 - What is the smallest compiled launch request that supports native and pane execution without leaking secrets?
-- Should Pi JSONL be captured through a private file/pipe while the pane runs the interactive TUI, or should the child use a dedicated machine-readable mode with a separately visible pane experience?
+- **Resolved:** interactive TUI uses a pre-created `--session` JSONL file; `--mode json` remains the unchanged native stdout path. The core reporting extension writes ordered custom entries.
 - How are retained panes enumerated and cleaned through the existing Cohort status/control surface without adding mux-specific management actions?
 - What deterministic priority applies when cmux and tmux are both active?
 - Which lifecycle metadata must persist in Cohort's async status files to reconnect after a parent restart?
@@ -304,7 +306,7 @@ Resolve these through code/API inspection before implementation:
 
 ## First actions in the new repository
 
-1. Create the repository and package skeleton without publishing it.
+1. Preserve the existing public repository and draft PR #1; keep the npm package unpublished.
 2. Copy this document into `doc/plans/` and keep it as the project handoff.
 3. Add donor repository and upstream Cohort references to contributor documentation.
 4. Inventory donor files and commits into three buckets: transport to extract, tests to port, compatibility code to discard.
@@ -324,3 +326,58 @@ Resolve these through code/API inspection before implementation:
 - terminal screen scraping as completion evidence;
 - mandatory mux dependencies in `pi-cohort`;
 - silent fallback after an explicitly requested backend fails.
+
+## Ratified lifecycle addendum
+
+This addendum takes precedence over discovery-era broad lifecycle wording above.
+It records the accepted v1 boundary without discarding the donor map, source seams,
+registration comparison, security constraints, validation matrix, risks, or
+migration history in this transfer document.
+
+### Ownership and result source
+
+| Concern | Owner |
+|---|---|
+| reporting extension via `runtimeExtensions` | pi-cohort core |
+| session-log parse/replay, result construction, durable delivery | pi-cohort core |
+| ready/abort/shutdown/steer/rebound control socket | pi-cohort core |
+| surface launch and mux lifecycle | pi-cohort-mux |
+| reattach metadata and close/retain cleanup | pi-cohort-mux |
+
+The companion never interprets Pi session entries or manufactures Cohort results.
+It does not own control semantics. Core injects the reporting extension before
+launch, including with `--no-extensions`, and knows the session path first.
+
+### Retention protocol
+
+One logical child has one surface. Attempts from model fallback execute sequentially
+in that surface, and only the final failure is retained. After successful durable
+result delivery, close the surface and permit ordinary worktree cleanup. On failure,
+pause, or `taken_over`, retain both the surface and Cohort-created worktree until
+explicit cleanup or reaping. `taken_over` is a distinct human takeover/paused
+outcome, never a failure. Retained state exposes an actionable reattach handle.
+
+### Superseded discovery conclusions
+
+Earlier statements describing an adapter-provided lifecycle/result stream,
+adapter interruption, or a broad launch/lifecycle/result/interrupt/cleanup SPI are
+superseded by the narrow four-part SPI and core control plane above. They are kept
+only as history of the discovery alternatives. The earlier no-repository status and
+"create only after SPI release" delivery wording are superseded: the repository is
+public today, draft PR #1 holds the prototype, while npm publication remains
+private/unpublished pending the core slice and conformance evidence.
+
+### First-slice acceptance additions
+
+- Verify session files are created empty before interactive Pi launch and contain
+  Pi header plus core custom entries in order.
+- Verify `agent_settled` alone does not terminate the child; shutdown follows
+  durable result delivery.
+- Verify ready, abort, shutdown, steer, and rebound operate without a mux.
+- Verify adapters do not parse logs, classify results, or duplicate control.
+- Verify failure, pause, and takeover retain worktrees; success closes only after
+  delivery; cleanup/reaping has an actionable retained handle.
+- Verify one surface across sequential fallback attempts and retain only final
+  failure.
+- Keep no-polling and no-screen-scraping assertions in both core and adapter
+  conformance tests.
