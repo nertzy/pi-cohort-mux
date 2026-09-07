@@ -21,7 +21,7 @@ export function createFakeScheduler() {
   };
 }
 
-const terminalPhases = new Set(["paused", "requested_closure", "taken_over"]);
+const terminalPhases = new Set(["paused", "requested_closure", "result_missing"]);
 
 const sourceFor = {
   surface_created: "mux",
@@ -33,7 +33,6 @@ const sourceFor = {
   settled: "control",
   interrupt_ack: "control",
   shutdown_ack: "control",
-  session_rebound: "control",
   progress: "session_log",
   result: "session_log",
   interrupt: "parent",
@@ -48,7 +47,6 @@ export function createMachine({ scheduler }) {
     reconciliations: {},
     phase: "created",
     intent: "retain",
-    retainWorktree: false,
   };
 
   const record = (event) => state.provenance.push({ type: event.type, source: event.source ?? sourceFor[event.type] });
@@ -75,10 +73,9 @@ export function createMachine({ scheduler }) {
     } else if (state.facts.exited) {
       state.phase = state.facts.ready ? "child_crashed" : "startup_failed";
       state.intent = "retain";
-    } else if (state.facts.takenOver) {
-      state.phase = "taken_over";
+    } else if (state.facts.resultMissing) {
+      state.phase = "result_missing";
       state.intent = "retain";
-      state.retainWorktree = true;
     } else if (state.facts.explicitClose) {
       state.phase = "requested_closure";
       state.intent = "close";
@@ -148,7 +145,7 @@ export function createMachine({ scheduler }) {
       case "settled":
         state.facts.settled = true;
         if (state.facts.result === undefined) scheduler.schedule("settled_result", () => {
-          state.facts.takenOver = true;
+          state.facts.resultMissing = true;
           derive();
         });
         break;
@@ -181,7 +178,6 @@ export function createMachine({ scheduler }) {
         state.facts.interruptAck = true;
         break;
       case "interrupt":
-      case "session_rebound":
         break;
       default:
         throw new Error(`Unknown fixture event: ${event.type}`);

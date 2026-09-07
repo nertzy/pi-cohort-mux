@@ -12,7 +12,7 @@ This document transfers the current discovery and decisions into the new reposit
 - No execution-backend implementation has been added to `pi-cohort`.
 - `nertzy/pi-cohort-mux` exists as a **public** GitHub repository; its npm package remains private and unpublished.
 - Draft PR #1 carries the companion prototype; the donor bridge remains the active local integration.
-- The current `pi-cohort` design worktree is based on `origin/main` at `225ab55` (`5.3.1`) on branch `mux-execution-backends`.
+- The `pi-cohort` design worktree is rebased on `origin/main` at `a2b4908` (`6.0.1`) on branch `mux-execution-backends`, after [gh-11](https://github.com/jjuraszek/pi-cohort/issues/11) removed pi-intercom support outright (`doc/specs/2026-09-06-gh-11-remove-pi-intercom.md`). This design must not reintroduce live parent<->child messaging, foreground detach, or result receipts under a mux-specific name.
 - A context draft with detailed file and line references exists at `doc/specs/2026-09-06-mux-execution-backends.md` in that worktree.
 
 ## Repositories and intended ownership
@@ -30,7 +30,7 @@ Owns orchestration and the public execution-backend SPI:
 - model fallback policy;
 - foreground and durable async coordination;
 - run/session identity, persisted status, ready/settled/result session-log semantics, and result aggregation;
-- mux-independent bidirectional child control: interrupt, shutdown, steer, and session rebound;
+- a narrow, mux-independent control protocol: the child reports readiness, and core requests interrupt (`ctx.abort`) or shutdown (`ctx.shutdown`) - no steer, no session rebound, matching gh-11's removal of live child messaging;
 - backend selection and configuration.
 
 Native child-process execution remains built in and backward compatible.
@@ -68,27 +68,27 @@ Treat this as donor and migration code, not the permanent package:
 6. **Override:** provide one simple user/project configuration value that forces `native` or a named backend. An explicitly selected unavailable backend fails loudly.
 7. **Initial adapters:** implement cmux and tmux. Document how Herdr maps to the SPI, but defer its implementation until its public lifecycle/socket contract is verified. Zellij and WezTerm are later candidates despite existing donor support.
 8. **Mode parity:** support pane-backed foreground and async children through the same backend contract. Keep Cohort's detached async runner as the durable coordinator.
-9. **Pane retention:** close a pane only after successful result delivery. Retain failed, interrupted, paused, and attention-needed panes for inspection and explicit cleanup.
-10. **SPI scope (ratified):** adapters provide only surface launch, mux lifecycle, reattach metadata, and close/retain cleanup. Core owns session-log parsing/results and the mux-independent bidirectional child control socket. Screen scraping, focus, and arbitrary interactive input are not v1 contracts.
+9. **Pane retention:** close a pane only after successful result delivery. Retain failed and interrupted panes for inspection and explicit cleanup. Interruption preserves core's existing terminal `paused` result and existing resume/revive behavior; it does not imply a still-running child or Pi session rebound. This is a diagnostic surface promise only - it does not change worktree lifetime, which stays whatever `cleanupWorktrees()` already does (unconditional, in a `finally` block). Outcome-conditional worktree retention/reaping, a distinct `taken_over`/human-takeover state, and attention-needed panes are deferred; gh-11 already makes `resume` on a running child an error, so there is no live child to take over in v1.
+10. **SPI scope (ratified):** adapters provide only surface launch, mux lifecycle, reattach metadata, and close/retain cleanup. Core owns session-log parsing/results and the narrow mux-independent control protocol: child readiness plus core-requested interrupt and shutdown, with no steer or session rebound. Screen scraping, focus, and arbitrary interactive input are not v1 contracts.
 11. **Repository timing (ratified):** the public GitHub repository already exists and draft PR #1 carries its prototype. The npm package remains private/unpublished; stable adapter release and normal installation await the landed core SPI and conformance evidence.
 12. **Foreground/async workflow issue:** the current local bridge sometimes reroutes an explicitly foreground Cohort dispatch into a detached cmux pane. Do not let that block this project now, but record preservation of caller-requested execution semantics as a conformance requirement.
 
 ## Target architecture
 
-Cohort compiles each logical child into a backend-neutral launch request containing the already-resolved command, arguments, required `cwd`, run/session identity, artifact locations, and cancellation signals. It preserves Pi arguments and intercom environment contracts. Worktree metadata is optional awareness; existing `worktreeSetupHook` remains the setup owner and v1 adds no setup/creation API.
+Cohort compiles each logical child into a backend-neutral launch request containing the already-resolved command, arguments, required `cwd`, run/session identity, artifact locations, and cancellation signals. It preserves Pi arguments unchanged. gh-11 removed intercom environment plumbing outright, and this design does not reintroduce it. Worktree metadata is optional awareness; existing `worktreeSetupHook` remains the setup owner and v1 adds no setup/creation API.
 
 A registered adapter launches a surface and reports mux lifecycle, reattach metadata, and close/retain cleanup only. It does not return Cohort lifecycle/results: Core injects the child reporting extension through `runtimeExtensions`, parses/replays the ordered session JSONL, applies fallback/acceptance/aggregation/persistence, and constructs durable results. This injection applies even with `--no-extensions`.
 
 Pi 0.85.0 cannot combine TUI and `--mode json`. Interactive launches pre-create an empty `--session` JSONL file; native stdout JSONL mode remains unchanged. Pi entries plus core-owned `ready`, `settled`, `result`, and `control` entries are the durable interactive result stream. `agent_settled` leaves the child alive; core shuts it down only after durable delivery. Entry-granularity progress is accepted in v1.
 
-The core-owned control socket is mux-independent: ready, interrupt (`ctx.abort`), shutdown (`ctx.shutdown`), steer, and session rebound. cmux hooks are optional corroborating awareness, tmux needs no hook, and neither polling nor screen scraping is a result source. Native mux facts, child/session facts, and unknown/no-activity stay provenance-distinct.
+The core-owned control protocol is mux-independent and narrow: the child reports readiness, and core requests interrupt (`ctx.abort`) or shutdown (`ctx.shutdown`). There is no steer and no session rebound in v1 - gh-11 removed live parent<->child messaging from pi-cohort, and `resume` on a running child errors regardless of backend. A `BLOCKED:` child returns an ordinary terminal failed result through the same session-log/result path as any other failure; it is not a retained live child awaiting a decision. cmux hooks are optional corroborating awareness, tmux needs no hook, and neither polling nor screen scraping is a result source. Native mux facts, child/session facts, and unknown/no-activity stay provenance-distinct.
 
 ## Important pi-cohort seams
 
 Start core work at these boundaries:
 
 - `src/runs/shared/pi-spawn.ts` — portable Pi command resolution;
-- `src/runs/shared/pi-args.ts` — Pi arguments, session flags, nested routing, and intercom environment;
+- `src/runs/shared/pi-args.ts` — Pi arguments, session flags, and nested routing (intercom environment plumbing was removed by gh-11 and must not be reintroduced);
 - `src/runs/foreground/execution.ts` — foreground `spawn()` and JSONL lifecycle;
 - `src/runs/background/subagent-runner.ts` — duplicate async child streaming boundary;
 - `src/runs/background/async-execution.ts` — durable runner launch; keep this independent from mux panes;
@@ -154,12 +154,12 @@ A conforming adapter supplies surface facts to an integrated core+adapter system
 - child session and artifact identity is stable and returned to Cohort;
 - startup failures are distinguishable from child failures;
 - lifecycle facts cannot be confused with terminal decoration or prompts;
-- core control (`ctx.abort`) produces an explicit paused/interrupted state;
+- core control (`ctx.abort`) produces an explicit interrupted state;
 - cleanup happens after successful delivery, not merely after child exit;
 - failed launch, native lifecycle observation, finalization, and fallback paths clean temporary state predictably;
-- retained diagnostic panes are reported to the user with an actionable handle;
+- retained diagnostic panes are reported to the user with an actionable handle, without implying any change to worktree lifetime;
 - parallel launches have deterministic result ordering and bounded resource usage;
-- nested Cohort runs preserve depth and intercom routing;
+- nested Cohort runs preserve depth state (intercom routing no longer exists after gh-11 and must not be reintroduced);
 - a parent exit does not destroy durable async coordination;
 - unavailable auto-selected adapters fall back to native, while an unavailable explicit selection fails.
 
@@ -185,7 +185,11 @@ A conforming adapter supplies surface facts to an integrated core+adapter system
 - Zellij and WezTerm adapters;
 - screen-read/scraping APIs;
 - arbitrary input injection;
-- focus manipulation, screen capture, and arbitrary terminal input; `taken_over` detection/state remains core-owned and does not make input or focus part of the SPI;
+- focus manipulation, screen capture, and arbitrary terminal input;
+- steer and session rebound as control-channel operations (removed with pi-intercom by gh-11; not reintroduced here);
+- a distinct `taken_over`/human-takeover result state, and any live decision escalation or resumable blocked child - gh-11 already makes `resume` on a running child an error;
+- durable completion/result receipts beyond the existing session-log/result path;
+- outcome-conditional worktree retention or reaping owned by this SPI (worktree lifetime stays exactly whatever `cleanupWorktrees()` already does today);
 - mux-owned chain, fanout, acceptance, output, persona, or worktree behavior;
 - replacing Cohort's detached async coordinator;
 - archiving the donor fork before migration parity.
@@ -236,7 +240,7 @@ A conforming adapter supplies surface facts to an integrated core+adapter system
 
 - Native regression tests for current foreground and async behavior.
 - Public backend contract/conformance tests only for surface launch, mux lifecycle, reattach metadata, close/retain cleanup, unavailable backends, and incompatible versions.
-- Core tests for session-log reporting/result construction and bidirectional child control.
+- Core tests for session-log reporting/result construction, child-to-core readiness, and core-to-child interrupt/shutdown.
 - Tests proving `auto`, `native`, and named-backend selection.
 - Tests for both extension load orders, duplicate registration, and reload.
 - Windows and no-mux CI retain native behavior.
@@ -260,8 +264,8 @@ At minimum, verify:
 - structured and file output;
 - acceptance/reviewer gates;
 - model fallback;
-- nested intercom identities;
-- status, core control (interrupt and resume), and retained-pane metadata;
+- nested run depth;
+- status, core control, and retained-pane metadata: interrupt produces the existing terminal `paused` result; completed, failed, and paused children keep existing resume/revive behavior, while `resume` on a running child errors post-gh-11;
 - successful close-after-delivery and failure retention;
 - native fallback outside supported muxes.
 
@@ -340,7 +344,7 @@ migration history in this transfer document.
 |---|---|
 | reporting extension via `runtimeExtensions` | pi-cohort core |
 | session-log parse/replay, result construction, durable delivery | pi-cohort core |
-| ready/abort/shutdown/steer/rebound control socket | pi-cohort core |
+| ready/abort/shutdown control channel (no steer, no rebound) | pi-cohort core |
 | surface launch and mux lifecycle | pi-cohort-mux |
 | reattach metadata and close/retain cleanup | pi-cohort-mux |
 
@@ -352,20 +356,33 @@ launch, including with `--no-extensions`, and knows the session path first.
 
 One logical child has one surface. Attempts from model fallback execute sequentially
 in that surface, and only the final failure is retained. After successful durable
-result delivery, close the surface and permit ordinary worktree cleanup. On failure,
-pause, or `taken_over`, retain both the surface and Cohort-created worktree until
-explicit cleanup or reaping. `taken_over` is a distinct human takeover/paused
-outcome, never a failure. Retained state exposes an actionable reattach handle.
+result delivery, close the surface. On failure - including a `BLOCKED:` terminal
+result - retain the surface for inspection until explicit cleanup, exposing an
+actionable reattach handle. Interruption preserves core's existing terminal
+`paused` result and also retains the diagnostic surface; completed, failed, and
+paused children retain existing resume/revive behavior, while a running child
+cannot be resumed. This is a diagnostic surface promise only: worktree lifetime
+is unaffected and stays whatever `cleanupWorktrees()` already does today
+(unconditional, in a `finally` block, regardless of outcome). A distinct
+`taken_over`/human-takeover outcome and outcome-conditional worktree
+retention/reaping are deferred, not part of this slice; no live child remains to
+take over in v1.
 
 ### Superseded discovery conclusions
 
 Earlier statements describing an adapter-provided lifecycle/result stream,
-adapter interruption, or a broad launch/lifecycle/result/interrupt/cleanup SPI are
-superseded by the narrow four-part SPI and core control plane above. They are kept
-only as history of the discovery alternatives. The earlier no-repository status and
-"create only after SPI release" delivery wording are superseded: the repository is
-public today, draft PR #1 holds the prototype, while npm publication remains
-private/unpublished pending the core slice and conformance evidence.
+adapter interruption, a broad launch/lifecycle/result/interrupt/cleanup SPI, a
+bidirectional control socket with steer/session rebound, a distinct `taken_over`
+result state, or outcome-conditional worktree retention/reaping owned by this SPI
+are superseded by the narrow four-part SPI and limited core control protocol
+above. The steer/rebound/`taken_over`/worktree-retention wording was written before
+[gh-11](https://github.com/jjuraszek/pi-cohort/issues/11) removed pi-intercom and
+live parent<->child messaging from pi-cohort outright; none of it is reintroduced
+here. They are kept only as history of the discovery alternatives. The earlier
+no-repository status and "create only after SPI release" delivery wording are
+superseded: the repository is public today, draft PR #1 holds the prototype, while
+npm publication remains private/unpublished pending the core slice and conformance
+evidence.
 
 ### First-slice acceptance additions
 
@@ -373,11 +390,14 @@ private/unpublished pending the core slice and conformance evidence.
   Pi header plus core custom entries in order.
 - Verify `agent_settled` alone does not terminate the child; shutdown follows
   durable result delivery.
-- Verify ready, abort, shutdown, steer, and rebound operate without a mux.
+- Verify ready, abort, and shutdown operate without a mux (no steer, no rebound).
 - Verify adapters do not parse logs, classify results, or duplicate control.
-- Verify failure, pause, and takeover retain worktrees; success closes only after
-  delivery; cleanup/reaping has an actionable retained handle.
+- Verify a failed child (including `BLOCKED:`) retains its surface with an
+  actionable reattach handle; success closes only after delivery. Verify worktree
+  cleanup runs exactly as it does today (unconditionally) regardless of surface
+  retention - this slice makes no new retention/reaping promise over worktrees.
 - Verify one surface across sequential fallback attempts and retain only final
   failure.
-- Keep no-polling and no-screen-scraping assertions in both core and adapter
-  conformance tests.
+- Verify polling or screen scraping rendered terminal content never serves as
+  result evidence. Prefer authoritative native mux push events; bounded native
+  lifecycle reconciliation may poll when a backend cannot push the needed fact.

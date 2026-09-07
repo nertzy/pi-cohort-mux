@@ -136,16 +136,29 @@ test("result and settled win over later surface closure as a delivery candidate"
   assert.equal(state.snapshot().intent, "close_after_delivery");
 });
 
-test("settled without result becomes taken_over after a grace deadline", () => {
+test("settled without result becomes result_missing after a grace deadline", () => {
   const { state, scheduler } = machine();
   send(state, "surface_created");
   send(state, "ready");
   send(state, "settled");
   scheduler.fire("settled_result");
 
-  assert.equal(state.snapshot().phase, "taken_over");
+  assert.equal(state.snapshot().phase, "result_missing");
   assert.equal(state.snapshot().intent, "retain");
-  assert.equal(state.snapshot().retainWorktree, true);
+  assert.equal("retainWorktree" in state.snapshot(), false);
+});
+
+test("a settled BLOCKED result is a normal delivery candidate without fixture classification", () => {
+  const { state } = machine();
+  const blocked = "BLOCKED: approval needed\nDone: inspected\nRemaining: decide";
+  send(state, "surface_created");
+  send(state, "ready");
+  send(state, "result", { value: blocked });
+  send(state, "settled");
+
+  assert.equal(state.snapshot().phase, "delivery_candidate");
+  assert.equal(state.snapshot().facts.result, blocked);
+  assert.equal(JSON.stringify(state.snapshot()).match(/blocked_live_child|BLOCKED result/i), null);
 });
 
 test("exit before settled is child_crashed with no model fallback", () => {
@@ -221,7 +234,7 @@ test("requested closures remain requested after a late result and settlement", (
   assert.deepEqual(state.snapshot().provenance.slice(-2).map((fact) => fact.type), ["result", "settled"]);
 });
 
-test("taken-over calls remain taken over after a late result", () => {
+test("result-missing calls remain result missing after a late result", () => {
   const { state, scheduler } = machine();
   send(state, "surface_created");
   send(state, "ready");
@@ -229,7 +242,7 @@ test("taken-over calls remain taken over after a late result", () => {
   scheduler.fire("settled_result");
   send(state, "result", { value: "late" });
 
-  assert.equal(state.snapshot().phase, "taken_over");
+  assert.equal(state.snapshot().phase, "result_missing");
   assert.equal(state.snapshot().intent, "retain");
   assert.equal(state.snapshot().facts.result, "late");
   assert.equal(state.snapshot().provenance.at(-1).type, "result");
@@ -260,6 +273,19 @@ test("structured activity replaces one advisory deadline without periodic timers
   send(state, "result", { value: "two" });
   assert.equal(scheduler.count(), 1);
   assert.equal(scheduler.replacements("activity"), 2);
+});
+
+test("the fixture rejects removed session-rebound control", () => {
+  const { state } = machine();
+
+  assert.throws(() => send(state, "session_rebound"), /Unknown fixture event/);
+});
+
+test("the fixture has no removed live-messaging or worktree lifecycle vocabulary", () => {
+  const { state } = machine();
+  send(state, "surface_created");
+
+  assert.equal(JSON.stringify(state.snapshot()).match(/session_rebound|taken_over|retainWorktree|steer|receipt|intercom/i), null);
 });
 
 test("race table preserves fact provenance, reconciliation, and close intent", () => {

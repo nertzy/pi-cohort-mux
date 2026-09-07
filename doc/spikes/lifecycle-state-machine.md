@@ -13,7 +13,7 @@ from a neighboring fact:
 | Source | Inputs |
 | --- | --- |
 | mux | `surface_created`, `surface_closed { requested }`, `exited { status, signal }`, `backend_disconnected`, `no_observed_activity` |
-| child control | `ready`, `settled`, `interrupt_ack`, `shutdown_ack`, `session_rebound` |
+| child control | `ready`, `settled`, `interrupt_ack`, `shutdown_ack` |
 | session log | `progress`, `result` |
 | parent intent | `interrupt`, `shutdown_after_delivery`, `explicit_close` |
 
@@ -42,8 +42,8 @@ The fixture uses these displayable phases:
   `hung`, `healthy`, or `dead`, and triggers no termination.
 - `delivery_candidate` requires both `result` and `settled`, and wins over a
   subsequent unrequested surface closure.
-- `taken_over` is settled without a result when its bounded grace expires. The
-  pane and any Cohort-created worktree are retained. It is terminal for the
+- `result_missing` is settled without a session-log result when its bounded
+  grace expires. It retains the diagnostic surface only. It is terminal for the
   original call: a later result remains retained as evidence and provenance but
   cannot make the call a `delivery_candidate`.
 - `child_crashed` is an authoritative exit after readiness but before settlement.
@@ -55,10 +55,11 @@ The fixture uses these displayable phases:
   remain retained as evidence and provenance but cannot reclassify it.
 - `paused` follows `interrupt_ack` and is retained. It is terminal for the
   original call: later result, settlement, or observed exit facts are preserved
-  as provenance and evidence but cannot reclassify the call.
+  as provenance and evidence but cannot reclassify the call. This does not
+  imply a live-child resume protocol or worktree retention policy.
 
 One explicit terminal-precedence rule keeps `paused`, `requested_closure`, and
-`taken_over` monotonic for the original call once each outcome is reached.
+`result_missing` monotonic for the original call once each outcome is reached.
 Later facts are still recorded with their source, but cannot reclassify those
 calls as `delivery_candidate` or `child_crashed`. `blocked_before_ready` and
 `needs_attention` remain recoverable rather than terminal.
@@ -76,7 +77,13 @@ structured activity event (`ready`, `progress`, or `result`) first clears an
 existing advisory `no_observed_activity` fact, then replaces the single advisory
 timer; it does not create a periodic timer. A detected mux or control disconnect
 schedules exactly one reconciliation for that source, rather than a continuous
-loop.
+loop. Surface reattachment/reconciliation concerns mux facts only; it does not
+rebind a Pi session or enable conversational parent-child control.
+
+The fixture carries session-log results opaquely. Thus a settled payload starting
+with `BLOCKED:` is an ordinary `delivery_candidate`; any result classification is
+owned by Cohort, not the mux fixture. It does not create a blocked-live-child
+state, a result receipt, or a steer/resume path.
 
 Absence of evidence is represented as missing or `unknown`, never converted into
 an exit status, readiness, settlement, crash, hang, or automatic cleanup. The
