@@ -126,13 +126,18 @@ explicit failure path; it does not manufacture `exited` or `settled`.
 
 ## Verified probes
 
-No long-lived `cmux events` probe was launched here: prior lifecycle research
-observed stream heartbeats and had to interrupt the subscriber, which confirms
-it is intentionally blocking rather than a one-shot probe.
+The `doc/spikes/cmux-parity.md` spike since launched one real long-lived
+`cmux events --name ... --no-heartbeat` subscription against live disposable
+workspaces/surfaces (cmux 0.64.22). It receives an ack before either launch,
+then client-side UUID predicates ignore deliberately-created unrelated daemon
+facts; cleanup explicitly terminates and awaits it. That spike is the
+authoritative source for exact event-frame shapes; this table keeps only the
+narrow facts it changed.
 
 | Probe command | Observed result | Consequence |
 | --- | --- | --- |
 | `cmux --version`; `cmux capabilities` | `0.64.22`; JSON lists `events.v1`, `surface.health`, `workspace.list`, `surface.list`, `pane.list`, `system.top`, and `debug.terminals` methods; no generic exit-status method. `events.stream` is verified by `cmux events --help` and the public docs/source/socket method. | Stream mux model facts; do not claim generic child exit facts. |
+| Live long-lived `cmux events --name workspace.created --name surface.created --name surface.closed --name pane.closed --name workspace.closed --no-heartbeat`, then decoy and reporter `workspace create --focus false`, then reporter shutdown and workspace close, correlated with `cmux --id-format both list-pane-surfaces` | UUID-predicate waits select only the reporter's `workspace.created`/`surface.created`/`workspace.closed` frames while deliberately-created decoy facts are ignored. A pre-armed, post-shutdown 1500ms UUID-correlated absence window receives no candidate close fact for the reporter process's own exit. | The exact `--id-format both` correlation and pre-armed absence proof are load-bearing evidence for the adapter's opaque handle and close/absence path; see `doc/spikes/cmux-parity.md`. |
 | `cmux events --help`; `cmux hooks --help`; `cmux hooks pi --help` | Events help documents `--after`, `--cursor-file`, `--reconnect`, and `--no-heartbeat`; hooks help accepts `cmux hooks <agent> install` and lists the generated Pi extension path. | Use cursor resume and the exact install form `cmux hooks pi install`; do not guess flags. |
 | Bounded source inspection: `rg -n -M 200 'agent\\.hook|agent_settled|hooks pi install' /Users/grant/code/cmux/{Sources,CLI,docs}` | The generated Pi extension subscribes to `agent_settled`; event publishing names `agent.hook.<HookEventName>`; documentation lists the hook event family. Separate source inspection shows `extra_fields` redaction. | Hooks contribute bounded semantic signals, not unredacted Cohort results. |
 | Disposable tmux 3.7c server with `remain-on-exit on`, a `pane-died` hook, and child `exit 23` | Retained pane format output: `%2|dead=1|status=23|signal=|time=1788736354`. | `pane-died` plus retained pane formats yields `exited(23)` with status provenance. |
