@@ -79,6 +79,31 @@ that boundary, and a mux-specific adapter behind it. They do not change the
 fact that Cohort must remain the owner of dispatch, completion, artifacts, and
 orchestration semantics.
 
+## Ordered strategy prior art: vim-dispatch
+
+At inspected [`tpope/vim-dispatch` revision
+`a2ff28abdb2d89725192db5b8562977d392a4d3f`](https://github.com/tpope/vim-dispatch/tree/a2ff28abdb2d89725192db5b8562977d392a4d3f):
+
+* [`plugin/dispatch.vim`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/plugin/dispatch.vim#L84-L97)
+  defines an explicit ordered handler list.
+* [`autoload/dispatch.vim`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/autoload/dispatch.vim#L408-L421)
+  tries that list in order and stops at the first handler that claims the
+  request.
+* [`autoload/dispatch/tmux.vim`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/autoload/dispatch/tmux.vim#L1-L50)
+  keeps tmux command construction inside the tmux handler rather than the core
+  dispatcher.
+
+Use the same policy boundary without copying editor-specific behavior:
+pi-cohort-mux registers an explicit `[cmux, tmux]` list, and Cohort tries it in
+that order. Higher-level, more opinionated transports come first: tmux can run
+inside cmux, but cmux cannot run inside tmux. A named user/project backend still
+overrides `auto`. Core does not hard-code these adapter names or infer priority
+from them.
+
+Do not copy vim-dispatch's temp-file completion polling, destructive pane
+cleanup, or per-editor opt-out globals. Cohort's session JSONL remains result
+evidence, and adapters remain limited to transport and mux lifecycle facts.
+
 ## Direct mux descendants
 
 Three public descendants independently confirm demand for visible interactive
@@ -152,6 +177,9 @@ upstream snapshot, not a separate implementation source.
    establishes a general child-process execution backend.
 5. Do not copy edxeth's JSON environment capsule. Any secret handoff must avoid
    plaintext persistence, including failure paths and delayed pane startup.
+6. Make `auto` policy explicit through adapter registration order. Register
+   higher-level transports first (`cmux`, then `tmux`); do not let alphabetical
+   order or core-side adapter knowledge choose the winner.
 
 ## Verification record
 
