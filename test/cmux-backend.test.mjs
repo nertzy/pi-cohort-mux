@@ -727,6 +727,66 @@ test("reattach: unknown — missing workspaceRef in handle yields status=unknown
   assert.ok(/workspaceRef/i.test(result.reason));
 });
 
+test("reattach: subscription exits before ack — returns unknown with non-empty reason, no subscription leak", async () => {
+  // Regression: if the cmux events process crashes before emitting its ack
+  // (e.g. the binary is not available or the socket is gone), reattach must
+  // return { status: "unknown", reason: <non-empty string> } and must not
+  // leak the subscription timer or child process.
+  class FakeEventsChildNoAck extends EventEmitter {
+    constructor() {
+      super();
+      this.stdout = new Readable({ read() {} });
+      this.stderr = new Readable({ read() {} });
+      this._killed = false;
+      this._exited = false;
+      // Exit with a non-zero code on the next tick — no ack frame emitted.
+      setImmediate(() => {
+        if (this._killed) return;
+        this._exited = true;
+        this.stdout.push(null);
+        this.stderr.push(null);
+        this.emit("exit", 1, null);
+      });
+    }
+
+    kill(signal) {
+      if (this._killed) return;
+      this._killed = true;
+      setImmediate(() => {
+        if (!this._exited) {
+          this._exited = true;
+          this.stdout.push(null);
+          this.stderr.push(null);
+          this.emit("exit", 0, signal ?? "SIGTERM");
+        }
+      });
+    }
+  }
+
+  const spawnedChildren = [];
+  function spawn(_cli, _args, _opts) {
+    const child = new FakeEventsChildNoAck();
+    spawnedChildren.push(child);
+    return child;
+  }
+
+  const { execFile } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  const handle = {
+    data: { workspaceRef: FAKE_WS_REF, surfaceId: FAKE_SF_ID },
+  };
+
+  const result = await backend.reattach(handle);
+
+  assert.equal(result.status, "unknown", "status must be unknown when subscription cannot ack");
+  assert.equal(typeof result.reason, "string", "reason must be a string");
+  assert.ok(result.reason.length > 0, "reason must be non-empty");
+  assert.equal(result.lease, undefined, "no lease returned when subscription never acked");
+  // Exactly one subscription was started then stopped — no dangling process.
+  assert.equal(spawnedChildren.length, 1, "one subscription child was spawned");
+  assert.ok(spawnedChildren[0]._exited, "subscription child must have exited (no process leak)");
+});
+
 // ─── close ────────────────────────────────────────────────────────────────────
 
 test("close: calls workspace close with the handle's workspaceRef", async () => {
