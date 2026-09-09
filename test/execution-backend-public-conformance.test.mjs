@@ -8,17 +8,6 @@
  * production conformance authority. The spike files remain for reference, clearly
  * labeled as historical.
  *
- * CONTRACT GAP — secretPipePath (reported to parent):
- *   The core testkit's makeRequest() always injects `secretPipePath: "/private/fifo"`.
- *   The cmux backend correctly rejects requests with secretPipePath — no defined
- *   child-side transport exists for this field in the v1 SPI, and loud rejection is
- *   safer than undefined behavior. The cmuxConformanceAdapter below strips it before
- *   forwarding so the core testkit's fixture can exercise all 12 conformance scenarios.
- *   Resolution: the core testkit fixture should either omit secretPipePath (it is typed
- *   optional: `readonly secretPipePath?: string`) or expose a per-adapter option to
- *   control whether secretPipePath is included. Core code is outside this package's
- *   write scope; parent must handle the testkit fixture change.
- *
  * Determinism: all CLI calls are intercepted by a stateful fake IO; the test suite
  * runs without any live cmux session, binary, or CMUX environment variables.
  */
@@ -131,39 +120,15 @@ function makeStatefulFakeIo() {
   return { execFile, spawn };
 }
 
-// ─── cmux conformance adapter ─────────────────────────────────────────────────
-
-/**
- * Wraps the real cmux backend with a stateful fake CLI and strips
- * `secretPipePath` from launch requests before forwarding.
- *
- * `secretPipePath` is optional in ExecutionSurfaceRequest (types.ts:
- * `readonly secretPipePath?: string`) with no defined cmux v1 child-side
- * transport guarantee. The cmux backend correctly rejects it for production
- * safety. This adapter bridges the core testkit's fixture (which always injects
- * secretPipePath) to the cmux backend without weakening the production guard.
- * See the CONTRACT GAP comment at the top of this file.
- */
-function createCmuxConformanceBackend() {
-  const io = makeStatefulFakeIo();
-  const inner = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn });
-
-  return {
-    ...inner,
-    async launch(request) {
-      // Strip secretPipePath — optional field, no cmux transport; see CONTRACT GAP above.
-      const { secretPipePath: _stripped, ...rest } = request;
-      return inner.launch(rest);
-    },
-  };
-}
-
 // ─── Conformance registration ─────────────────────────────────────────────────
 
 const registered = registerExecutionBackendConformance({
   test,
   name: "cmux backend (core testkit)",
-  createBackend: createCmuxConformanceBackend,
+  createBackend: () => {
+    const io = makeStatefulFakeIo();
+    return createCmuxBackend({ execFile: io.execFile, spawn: io.spawn });
+  },
   createHarness: (backend) => wrapWithConformanceHarness(backend),
   prohibitedValues: [],
 });
