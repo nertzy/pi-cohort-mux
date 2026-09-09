@@ -14,4 +14,8 @@ test("declares a private ESM package for pi-cohort mux backends", () => {
   assert.equal(packageJson.license, "MIT");
   assert.equal(packageJson.repository, "github:nertzy/pi-cohort-mux");
   assert.equal(packageJson.exports["."], "./src/index.js");
+  assert.equal(
+    packageJson.exports["./execution-backend"],
+    "./src/cmux-backend.js",
+  );
 });
