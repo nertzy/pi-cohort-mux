@@ -10,6 +10,19 @@ Planned transport scope is [cmux](https://github.com/manaflow-ai/cmux) and tmux
 pane execution. Pane command text and persistent environment files must never
 contain secrets.
 
+## Installation
+
+This package depends on a pinned Git commit of the `nertzy/pi-cohort` fork via
+HTTPS. No GitHub SSH key is required. Install with:
+
+```sh
+npm ci --allow-git root
+```
+
+`--allow-git root` is required because npm 12+ defaults `--allow-git` to `none`;
+the `root` scope allows only the git dependency declared in this project's own
+`package.json`, not transitive ones.
+
 ## Development
 
 ```sh
