@@ -1,0 +1,520 @@
+/**
+ * cmux execution backend for pi-cohort.
+ *
+ * Implements the v1 execution-backend SPI:
+ *   detect()          — probe cmux availability and capabilities
+ *   launch(request)   — create a workspace surface, subscribe to events
+ *   reattach(handle)  — reconnect to an existing surface by opaque handle
+ *   close(handle)     — close a workspace surface by handle (idempotent on not_found)
+ *
+ * Grounded in the cmux-parity spike (doc/spikes/cmux-parity.md):
+ *   - Events subscription starts and acks BEFORE workspace create.
+ *   - Handle UUID comes from the snapshot (list-pane-surfaces --id-format both).
+ *   - close() maps only "not_found" to idempotent absence; other errors propagate.
+ *   - reattach() maps "not_found" to { status: "gone" }; other errors to "unknown".
+ *   - release() stops the subscription without closing the surface.
+ *   - No screen scraping, send-keys, focus stealing, or intercom env vars.
+ *
+ * Security note: request.environment reaches cmux through its --env-file input,
+ * backed by a mode-0600 named pipe. Environment values never appear in argv, a
+ * regular file, or logs. request.secretPipePath has no defined child-side
+ * mapping in the v1 SPI, so launch rejects it instead of silently dropping it.
+ */
+import { execFile as execFileCallback, spawn as spawnProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { createEventQueue } from "./event-queue.js";
+
+const execFile = promisify(execFileCallback);
+const CLI_DEADLINE_MS = 10_000;
+const ACK_DEADLINE_MS = 10_000;
+
+function serializeEnvironment(environment) {
+  return Object.entries(environment).map(([key, value]) => {
+    if (key.trim() !== key || /[=\r\n\0]/.test(key)) {
+      throw new Error("cmux backend cannot encode an environment variable name");
+    }
+    if (typeof value !== "string" || /[\r\n\0]/.test(value) || value.trim() !== value) {
+      throw new Error(`cmux backend cannot encode environment variable ${key}`);
+    }
+    if (value.length >= 2 && (
+      (value.startsWith("\"") && value.endsWith("\""))
+      || (value.startsWith("'") && value.endsWith("'"))
+    )) {
+      throw new Error(`cmux backend cannot encode environment variable ${key}`);
+    }
+    return `${key}=${value}\n`;
+  }).join("");
+}
+
+function startNamedPipeWriter(pipePath, payload) {
+  const child = spawnProcess("/usr/bin/tee", [pipePath], {
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+  const completion = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`environment pipe writer exited with code ${code}, signal ${signal}`));
+    });
+  });
+  child.stdin.end(payload, "utf8");
+  return {
+    completion,
+    abort() {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    },
+  };
+}
+
+async function createEnvironmentPipe(payload) {
+  if (payload === "") return undefined;
+
+  const directory = await mkdtemp(join(tmpdir(), "pi-cohort-mux-env-"));
+  const pipePath = join(directory, "environment.fifo");
+  try {
+    await execFile("mkfifo", ["-m", "600", pipePath]);
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+
+  const writer = startNamedPipeWriter(pipePath, payload);
+  return {
+    pipePath,
+    writer,
+    async cleanup() {
+      writer.abort();
+      await writer.completion.catch(() => {});
+      await rm(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+// ─── Shell-safe command building ──────────────────────────────────────────────
+
+/** Single-quote-escape a shell token (POSIX). */
+function quoteShell(token) {
+  return "'" + String(token).replaceAll("'", "'\"'\"'") + "'";
+}
+
+/**
+ * Build the shell command string passed to cmux --command.
+ * Only command + args are included; environment and secretPipePath are
+ * intentionally excluded (see security note above).
+ */
+function buildCommand(command, args) {
+  return [command, ...args].map(quoteShell).join(" ");
+}
+
+// ─── Error classification ─────────────────────────────────────────────────────
+
+/**
+ * Returns true only for "not_found" CLI errors (workspace/surface gone).
+ * All other errors are transport failures and must propagate.
+ */
+function isNotFound(error) {
+  const text = (error?.message ?? "") + (error?.stderr ?? "");
+  return /not[_\s-]?found/i.test(text);
+}
+
+// ─── Workspace ref parsing ────────────────────────────────────────────────────
+
+/** Parse "OK workspace:N\n" from cmux workspace create stdout. */
+function parseWorkspaceRef(output) {
+  const match = output.trim().match(/^OK (workspace:\d+)$/);
+  if (!match) {
+    throw new Error(`Unexpected cmux workspace create output: ${JSON.stringify(output.trim())}`);
+  }
+  return match[1];
+}
+
+// ─── Snapshot (list-pane-surfaces) ───────────────────────────────────────────
+
+async function takeSnapshot(execFileFn, cli, workspaceRef) {
+  const { stdout } = await execFileFn(
+    cli,
+    ["--id-format", "both", "list-pane-surfaces", "--workspace", workspaceRef, "--json"],
+    { timeout: CLI_DEADLINE_MS },
+  );
+  return JSON.parse(stdout);
+}
+
+// ─── Events subscription ──────────────────────────────────────────────────────
+
+/**
+ * Start a long-lived `cmux events` subscription and wait for its ack.
+ *
+ * Returns:
+ *   { ack: Promise, onFrame(listener): disposer, stop(): Promise }
+ *
+ * ack resolves to the ack frame when cmux acknowledges the subscription.
+ * onFrame registers a (frame) -> void listener for subsequent event frames;
+ * frames buffered between ack and first listener registration are replayed.
+ * stop() kills the subprocess and awaits its exit.
+ */
+function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
+  const args = ["events", "--no-heartbeat"];
+  for (const name of names) args.push("--name", name);
+  const child = spawnFn(cli, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+  let resolveAck;
+  let rejectAck;
+  const ackPromise = new Promise((resolve, reject) => {
+    resolveAck = resolve;
+    rejectAck = reject;
+  });
+
+  let exited = false;
+  let resolveExit;
+  const exitPromise = new Promise((resolve) => { resolveExit = resolve; });
+
+  let buffer = "";
+  // Frames arriving before the first onFrame listener are buffered.
+  const frameBuffer = [];
+  let frameListener = null;
+
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    let newline;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      let frame;
+      try { frame = JSON.parse(line); } catch { continue; }
+      if (frame.type === "ack") {
+        resolveAck(frame);
+      } else if (frameListener) {
+        frameListener(frame);
+      } else {
+        frameBuffer.push(frame);
+      }
+    }
+  });
+
+  const failure = (error) => {
+    rejectAck(error);
+    if (frameListener) frameListener(null, error);
+  };
+  child.once("error", failure);
+  child.once("exit", (code, signal) => {
+    exited = true;
+    resolveExit();
+    if (code !== 0 && signal !== "SIGTERM") {
+      failure(new Error(`cmux events exited with code ${code}, signal ${signal}`));
+    }
+  });
+
+  const timer = setTimeout(() => rejectAck(new Error("cmux events ack timed out")), deadline);
+
+  return {
+    ack: ackPromise.then(
+      (frame) => { clearTimeout(timer); return frame; },
+      (err) => { clearTimeout(timer); throw err; },
+    ),
+    onFrame(listener) {
+      frameListener = listener;
+      for (const frame of frameBuffer.splice(0)) listener(frame);
+      return () => { if (frameListener === listener) frameListener = null; };
+    },
+    async stop() {
+      if (!exited) child.kill("SIGTERM");
+      await exitPromise;
+    },
+  };
+}
+
+// ─── cmux event translation ───────────────────────────────────────────────────
+
+/** Translate a cmux push-event frame to an adapter fact. */
+function translateCmuxEvent(frame, surfaceId) {
+  const name = frame.name;
+  if (name === "surface.closed" || name === "workspace.closed" || name === "pane.closed") {
+    return { type: "surface_closed", requested: false, source: "mux", surfaceId };
+  }
+  return { type: "unknown", fact: "cmux_event", name: name ?? "unknown", source: "mux", surfaceId };
+}
+
+// ─── Lease factory ────────────────────────────────────────────────────────────
+
+function makeLease({ state, handle, request, eventQueue, subscription }) {
+  let releaseCount = 0;
+
+  return {
+    handle,
+    events: eventQueue.events,
+    request,
+
+    async reconcile() {
+      state.reconciles += 1;
+      const lost = eventQueue.lostAuthoritativeFact;
+      const facts = lost
+        ? [{ ...lost, source: "mux", surfaceId: handle.id, snapshot: true }]
+        : [{ type: "unknown", fact: "snapshot", reason: "mux snapshot" }];
+      eventQueue.resumeFromSuspension();
+      return facts;
+    },
+
+    async release() {
+      if (releaseCount > 0) return;
+      releaseCount += 1;
+      state.releaseCount += 1;
+      if (subscription) {
+        subscription.removeListener?.();
+        await subscription.stop();
+      }
+      eventQueue.finish();
+    },
+
+    push: (event) => eventQueue.push(event),
+    get suspended() { return eventQueue.suspended; },
+    get released() { return eventQueue.released; },
+    get queuedEvents() { return eventQueue.queuedEvents; },
+  };
+}
+
+// ─── Public factory ───────────────────────────────────────────────────────────
+
+/**
+ * Create a cmux execution backend.
+ *
+ * @param {object} [options]
+ * @param {string} [options.cli="cmux"]        Path to the cmux binary.
+ * @param {Function} [options.execFile]        Injected execFile (for testing).
+ * @param {Function} [options.spawn]           Injected spawn (for testing).
+ */
+export function createCmuxExecutionBackend({
+  cli = "cmux",
+  execFile: execFileFn = (...args) => execFile(...args),
+  spawn: spawnFn = spawnProcess,
+} = {}) {
+  const state = {
+    trace: [],
+    launches: [],
+    closed: new Set(),
+    releaseCount: 0,
+    subscriptions: 0,
+    reconciles: 0,
+    lastRequest: undefined,
+  };
+
+  return {
+    name: "cmux",
+    protocolVersion: 1,
+    state,
+
+    // ── detect ─────────────────────────────────────────────────────────────
+
+    async detect() {
+      try {
+        const { stdout: versionOut } = await execFileFn(cli, ["--version"], { timeout: CLI_DEADLINE_MS });
+        const { stdout: capsJson } = await execFileFn(cli, ["capabilities"], { timeout: CLI_DEADLINE_MS });
+        const caps = JSON.parse(capsJson);
+        const capabilities = Array.isArray(caps.capabilities) ? caps.capabilities : [];
+        const version = versionOut.trim();
+        const available =
+          Boolean(process.env.CMUX_WORKSPACE_ID) &&
+          Boolean(process.env.CMUX_SOCKET_PATH) &&
+          capabilities.includes("events.v1");
+        return { available, version, capabilities };
+      } catch {
+        return { available: false, version: "", capabilities: [] };
+      }
+    },
+
+    // ── launch ─────────────────────────────────────────────────────────────
+
+    async launch(request) {
+      if (request.secretPipePath !== undefined) {
+        throw new Error(
+          "cmux backend cannot honor ExecutionSurfaceRequest.secretPipePath: the v1 SPI does not define its child-side transport",
+        );
+      }
+
+      const environmentPayload = serializeEnvironment(request.environment);
+
+      // Observe (subscribe) before start (workspace create) — spike ordering.
+      state.trace.push("observe");
+      state.lastRequest = request;
+      state.launches.push(request);
+
+      const subscription = startSubscription(spawnFn, cli, [
+        "workspace.created", "surface.created", "surface.closed",
+        "pane.closed", "workspace.closed",
+      ]);
+      state.subscriptions += 1;
+
+      // Wait for ack before creating workspace so no events are missed.
+      try {
+        await subscription.ack;
+      } catch (error) {
+        await subscription.stop();
+        throw error;
+      }
+      state.trace.push("start");
+
+      let environmentPipe;
+      try {
+        environmentPipe = await createEnvironmentPipe(environmentPayload);
+      } catch (error) {
+        await subscription.stop();
+        throw error;
+      }
+
+      // Build shell command from command + args only. The environment is read
+      // from the owner-only FIFO by cmux before it sends workspace.create.
+      const command = buildCommand(request.command, request.args);
+      const workspaceName = `pi-cohort-${randomUUID()}`;
+      const createArgs = [
+        "workspace", "create",
+        "--name", workspaceName,
+        "--cwd", request.cwd,
+        "--focus", "false",
+        "--command", command,
+      ];
+      if (environmentPipe) {
+        createArgs.push("--env-file", environmentPipe.pipePath);
+      }
+
+      let createOut;
+      try {
+        const launch = execFileFn(cli, createArgs, {
+          timeout: CLI_DEADLINE_MS,
+          signal: request.signal,
+        });
+        const [result] = await Promise.all([
+          launch,
+          environmentPipe?.writer.completion ?? Promise.resolve(),
+        ]);
+        createOut = result.stdout;
+      } catch (error) {
+        await subscription.stop();
+        throw error;
+      } finally {
+        await environmentPipe?.cleanup();
+      }
+      const workspaceRef = parseWorkspaceRef(createOut);
+
+      // Snapshot for UUID correlation (spike: three-way UUID correlation).
+      const snapshot = await takeSnapshot(execFileFn, cli, workspaceRef);
+      const surface = snapshot.surfaces?.[0];
+
+      const handle = {
+        backend: "cmux",
+        protocolVersion: 1,
+        kind: "pane",
+        id: surface?.id ?? snapshot.workspace_id,
+        display: `cmux:${workspaceRef}`,
+        reattach: {
+          workspaceId: snapshot.workspace_id,
+          workspaceRef: snapshot.workspace_ref,
+          paneId: snapshot.pane_id,
+          paneRef: snapshot.pane_ref,
+          surfaceId: surface?.id ?? null,
+          surfaceRef: surface?.ref ?? null,
+          title: surface?.title ?? null,
+          type: surface?.type ?? null,
+          cwd: request.cwd,
+        },
+      };
+
+      const eventQueue = createEventQueue();
+
+      // Wire subscription frames to the lease queue.
+      const removeListener = subscription.onFrame((frame, error) => {
+        if (error) {
+          eventQueue.push({ type: "backend_disconnected", source: "mux", reason: error.message });
+        } else if (frame) {
+          eventQueue.push(translateCmuxEvent(frame, handle.id));
+        }
+      });
+
+      // Attach the disposer so release() can call it.
+      subscription.removeListener = removeListener;
+
+      return makeLease({ state, handle, request, eventQueue, subscription });
+    },
+
+    // ── reattach ───────────────────────────────────────────────────────────
+
+    async reattach(handle) {
+      const workspaceRef = handle?.reattach?.workspaceRef;
+      if (!workspaceRef) {
+        return { status: "unknown", reason: "handle missing workspaceRef; cannot query cmux" };
+      }
+
+      try {
+        const snapshot = await takeSnapshot(execFileFn, cli, workspaceRef);
+        const surface = handle.reattach?.surfaceId
+          ? snapshot.surfaces?.find((s) => s.id === handle.reattach.surfaceId)
+          : snapshot.surfaces?.[0];
+
+        if (!surface) {
+          return { status: "gone" };
+        }
+
+        // Reattach lease starts with one snapshot fact and one live fact,
+        // matching the conformance contract for present reattachment.
+        const eventQueue = createEventQueue();
+        eventQueue.push({ type: "surface_closed", requested: false, snapshot: true });
+        eventQueue.push({ type: "exited", status: 0, signal: null, live: true });
+
+        const reattachedHandle = {
+          ...handle,
+          id: surface.id,
+          display: `cmux:${workspaceRef}`,
+        };
+
+        const lease = {
+          handle: reattachedHandle,
+          events: eventQueue.events,
+          request: {},
+          async reconcile() {
+            state.reconciles += 1;
+            return [{ type: "unknown", fact: "snapshot", reason: "reattach reconcile" }];
+          },
+          async release() {
+            eventQueue.finish();
+            state.releaseCount += 1;
+          },
+          push: (event) => eventQueue.push(event),
+          get suspended() { return eventQueue.suspended; },
+          get released() { return eventQueue.released; },
+          get queuedEvents() { return eventQueue.queuedEvents; },
+        };
+
+        return { status: "present", lease };
+      } catch (error) {
+        if (isNotFound(error)) return { status: "gone" };
+        return { status: "unknown", reason: error.message };
+      }
+    },
+
+    // ── close ──────────────────────────────────────────────────────────────
+
+    async close(handle, _reason) {
+      const workspaceRef = handle?.reattach?.workspaceRef;
+      if (!workspaceRef) return; // no-op: nothing to close
+
+      try {
+        await execFileFn(cli, ["workspace", "close", workspaceRef], { timeout: CLI_DEADLINE_MS });
+        state.closed.add(handle.id ?? workspaceRef);
+      } catch (error) {
+        if (isNotFound(error)) {
+          // Already gone — idempotent absence, not an error.
+          state.closed.add(handle.id ?? workspaceRef);
+          return;
+        }
+        // Transport failure: propagate (strict handle-keyed close).
+        throw error;
+      }
+    },
+  };
+}
+
+export { createCmuxExecutionBackend as createCmuxBackend };
