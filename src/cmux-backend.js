@@ -52,7 +52,7 @@ const ACK_DEADLINE_MS = 10_000;
 
 function serializeEnvironment(environment) {
   return Object.entries(environment).map(([key, value]) => {
-    if (key.trim() !== key || /[=\r\n\0]/.test(key)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
       throw new Error("cmux backend cannot encode an environment variable name");
     }
     if (typeof value !== "string" || /[\r\n\0]/.test(value) || value.trim() !== value) {

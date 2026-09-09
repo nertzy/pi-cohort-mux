@@ -377,6 +377,48 @@ test("launch: rejects secretPipePath rather than silently dropping it", async ()
   assert.equal(calls.length, 0);
 });
 
+test("launch: rejects empty-string env key loudly before any IO", async () => {
+  const { execFile, spawn, calls } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  // An empty key produces "=value\n" which the bootstrap cannot handle;
+  // must be caught at the serialization boundary, before subscribe or FIFO.
+  const request = makeRequest({ environment: { "": "silent-drop" } });
+
+  await assert.rejects(
+    backend.launch(request),
+    /cannot encode an environment variable name/,
+  );
+  assert.equal(calls.length, 0, "no execFile/spawn calls before key validation throws");
+});
+
+test("launch: rejects env key with embedded whitespace loudly before any IO", async () => {
+  const { execFile, spawn, calls } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  // OS env allows whitespace in names; shell identifiers do not.
+  // Must be rejected loudly at the boundary, not silently dropped.
+  const request = makeRequest({ environment: { "MY KEY": "some-value" } });
+
+  await assert.rejects(
+    backend.launch(request),
+    /cannot encode an environment variable name/,
+  );
+  assert.equal(calls.length, 0, "no execFile/spawn calls before key validation throws");
+});
+
+test("launch: rejects env key starting with a digit loudly before any IO", async () => {
+  const { execFile, spawn, calls } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  // "1INVALID" is not a valid POSIX shell identifier (must start with letter or _).
+  // Must be rejected loudly at the serialization boundary, before subscribe or FIFO.
+  const request = makeRequest({ environment: { "1INVALID": "some-value" } });
+
+  await assert.rejects(
+    backend.launch(request),
+    /cannot encode an environment variable name/,
+  );
+  assert.equal(calls.length, 0, "no execFile/spawn calls before key validation throws");
+});
+
 // ─── launch: handle structure ─────────────────────────────────────────────────
 
 test("launch: handle has SPI surface/display/data shape with UUID from snapshot", async () => {
