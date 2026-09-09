@@ -597,9 +597,75 @@ test("launch: cmux workspace.closed event from subscription becomes surface_clos
   await lease.release();
 });
 
+test("launch: unrecognized cmux event translates to sanitized unknown fact without raw event text", async () => {
+  // An event name that is not one of the known close variants.
+  const unknownEvent = { name: "workspace.renamed", type: "event", workspace_id: FAKE_WS_ID };
+  const { execFile, spawn } = makeFakeIo({ eventsFrames: [unknownEvent] });
+  const backend = createCmuxBackend({ execFile, spawn });
+  const lease = await backend.launch(makeRequest());
+
+  // Give the event loop time to process the stream data.
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const event = (await lease.events.next()).value;
+  assert.equal(event.type, "unknown");
+  assert.equal(event.fact, "cmux_event");
+  assert.equal(event.source, "mux");
+  // reason must be a core-owned string — no raw cmux event text.
+  assert.equal(typeof event.reason, "string");
+  assert.ok(event.reason.length > 0, "reason must be non-empty");
+  assert.ok(
+    !JSON.stringify(event).includes("workspace.renamed"),
+    "unknown event must not leak raw cmux event name into the fact",
+  );
+
+  await lease.release();
+});
+
 // ─── reattach ─────────────────────────────────────────────────────────────────
 
-test("reattach: present — returns status=present with snapshot then live facts", async () => {
+test("reattach: present — snapshot observation then real mux close event (no invented death events)", async () => {
+  // Simulate the cmux events subscription emitting a real close event after ack.
+  const closeEvent = { name: "workspace.closed", workspace_id: FAKE_WS_ID, type: "event" };
+  const { execFile, spawn } = makeFakeIo({ eventsFrames: [closeEvent] });
+  const backend = createCmuxBackend({ execFile, spawn });
+  const handle = {
+    backend: "cmux",
+    protocolVersion: 1,
+    surface: { kind: "pane", id: FAKE_SF_ID },
+    display: { label: `cmux:${FAKE_WS_REF}`, hint: `cmux:${FAKE_WS_REF}` },
+    data: {
+      workspaceId: FAKE_WS_ID, workspaceRef: FAKE_WS_REF,
+      paneId: FAKE_PN_ID, paneRef: FAKE_PN_REF,
+      surfaceId: FAKE_SF_ID, surfaceRef: FAKE_SF_REF,
+      title: "test", type: "terminal", cwd: "/test/cwd",
+    },
+  };
+
+  const result = await backend.reattach(handle);
+  assert.equal(result.status, "present");
+
+  // First event: real snapshot observation — NOT a fabricated death event.
+  const snapshotEvent = (await result.lease.events.next()).value;
+  assert.equal(snapshotEvent.snapshot, true, "first event must be snapshot observation");
+  assert.equal(snapshotEvent.source, "mux");
+  assert.equal(typeof snapshotEvent.timestamp, "number");
+  assert.deepEqual(snapshotEvent.surface, { kind: "pane", id: FAKE_SF_ID });
+  assert.notEqual(snapshotEvent.type, "surface_closed", "snapshot observation must not be a death event");
+  assert.notEqual(snapshotEvent.type, "exited", "snapshot observation must not be a death event");
+
+  // Second event: real surface_closed delivered by the live subscription (actual mux evidence).
+  const liveEvent = (await result.lease.events.next()).value;
+  assert.equal(liveEvent.type, "surface_closed", "cmux close event must become surface_closed fact");
+  assert.equal(liveEvent.source, "mux");
+  assert.ok(liveEvent.timestamp >= snapshotEvent.timestamp, "live event timestamp must be >= snapshot");
+
+  await result.lease.release();
+});
+
+test("reattach: present — live surface emits no invented death events", async () => {
+  // No extra frames from the subscription — live surface stays alive.
   const { execFile, spawn } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const handle = {
@@ -617,14 +683,13 @@ test("reattach: present — returns status=present with snapshot then live facts
 
   const result = await backend.reattach(handle);
   assert.equal(result.status, "present");
+
+  // The only pre-populated event is a snapshot observation — never surface_closed or exited.
   const snapshotEvent = (await result.lease.events.next()).value;
-  assert.equal(snapshotEvent.snapshot, true);
-  assert.equal(snapshotEvent.source, "mux");
-  assert.equal(typeof snapshotEvent.timestamp, "number");
-  assert.deepEqual(snapshotEvent.surface, { kind: "pane", id: FAKE_SF_ID });
-  const liveEvent = (await result.lease.events.next()).value;
-  assert.equal(liveEvent.live, true);
-  assert.ok(liveEvent.timestamp >= snapshotEvent.timestamp, "live event timestamp must be >= snapshot");
+  assert.equal(snapshotEvent.snapshot, true, "must be a snapshot observation");
+  assert.notEqual(snapshotEvent.type, "surface_closed", "live reattach must NOT emit invented surface_closed");
+  assert.notEqual(snapshotEvent.type, "exited", "live reattach must NOT emit invented exited");
+
   await result.lease.release();
 });
 

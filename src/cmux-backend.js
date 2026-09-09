@@ -249,7 +249,7 @@ function translateCmuxEvent(frame, surface) {
   if (name === "surface.closed" || name === "workspace.closed" || name === "pane.closed") {
     return { type: "surface_closed", requested: false, source: "mux", timestamp, surface };
   }
-  return { type: "unknown", fact: "cmux_event", name: name ?? "unknown", source: "mux", timestamp, surface };
+  return { type: "unknown", fact: "cmux_event", reason: "unrecognized cmux event", source: "mux", timestamp, surface };
 }
 
 // ─── Lease factory ────────────────────────────────────────────────────────────
@@ -473,6 +473,22 @@ export function createCmuxExecutionBackend({
         return { status: "unknown", reason: "handle missing workspaceRef; cannot query cmux" };
       }
 
+      // Start live observation BEFORE snapshot — mirror the launch ordering so
+      // no events are missed between snapshot and first live delivery.
+      const subscription = startSubscription(spawnFn, cli, [
+        "workspace.created", "surface.created", "surface.closed",
+        "pane.closed", "workspace.closed",
+      ]);
+      state.subscriptions += 1;
+
+      // Wait for subscription ack before proceeding.
+      try {
+        await subscription.ack;
+      } catch (error) {
+        await subscription.stop();
+        return { status: "unknown", reason: error.message };
+      }
+
       try {
         const snapshot = await takeSnapshot(execFileFn, cli, workspaceRef);
         const snapshotSurface = handle.data?.surfaceId
@@ -480,6 +496,7 @@ export function createCmuxExecutionBackend({
           : snapshot.surfaces?.[0];
 
         if (!snapshotSurface) {
+          await subscription.stop();
           return { status: "gone" };
         }
 
@@ -490,49 +507,40 @@ export function createCmuxExecutionBackend({
           display: { label: `cmux:${workspaceRef}`, hint: `cmux:${workspaceRef}` },
         };
 
-        // Reattach lease starts with one snapshot fact and one live fact,
-        // matching the conformance contract for present reattachment.
-        // Timestamps are non-decreasing: snapshot first, live second.
-        const now = Date.now();
         const eventQueue = createEventQueue();
+
+        // Pre-populate one snapshot observation fact — actual mux evidence that
+        // the surface is alive.  NOT fabricated death events (surface_closed/exited).
         eventQueue.push({
-          type: "surface_closed",
-          requested: false,
+          type: "unknown",
+          fact: "snapshot",
+          reason: "reattach observation",
+          source: "mux",
           snapshot: true,
-          source: "mux",
-          timestamp: now,
-          surface: reattachedSurface,
-        });
-        eventQueue.push({
-          type: "exited",
-          status: 0,
-          signal: null,
-          live: true,
-          source: "mux",
-          timestamp: now + 1,
+          timestamp: Date.now(),
           surface: reattachedSurface,
         });
 
-        const lease = {
-          handle: reattachedHandle,
-          events: eventQueue.events,
-          request: {},
-          async reconcile() {
-            state.reconciles += 1;
-            return [{ type: "unknown", fact: "snapshot", reason: "reattach reconcile", source: "mux", surface: reattachedSurface, timestamp: Date.now() }];
-          },
-          async release() {
-            eventQueue.finish();
-            state.releaseCount += 1;
-          },
-          push: (event) => eventQueue.push(event),
-          get suspended() { return eventQueue.suspended; },
-          get released() { return eventQueue.released; },
-          get queuedEvents() { return eventQueue.queuedEvents; },
-        };
+        // Wire subscription frames AFTER pre-populating the snapshot observation
+        // so the snapshot always arrives first in the queue.
+        const removeListener = subscription.onFrame((frame, error) => {
+          if (error) {
+            eventQueue.push({
+              type: "backend_disconnected",
+              source: "mux",
+              reason: error.message,
+              timestamp: Date.now(),
+              surface: reattachedHandle.surface,
+            });
+          } else if (frame) {
+            eventQueue.push(translateCmuxEvent(frame, reattachedHandle.surface));
+          }
+        });
+        subscription.removeListener = removeListener;
 
-        return { status: "present", lease };
+        return { status: "present", lease: makeLease({ state, handle: reattachedHandle, request: {}, eventQueue, subscription }) };
       } catch (error) {
+        await subscription.stop();
         if (isNotFound(error)) return { status: "gone" };
         return { status: "unknown", reason: error.message };
       }
