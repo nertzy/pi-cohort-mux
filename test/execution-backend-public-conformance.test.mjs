@@ -71,9 +71,13 @@ function makeStatefulFakeIo() {
       return { stdout: JSON.stringify({ capabilities: ["events.v1"] }) + "\n", stderr: "" };
     }
     if (args[0] === "workspace" && args[1] === "create") {
-      // Read from the env-file FIFO (if present) so the tee writer can complete.
-      const envFileIndex = args.indexOf("--env-file");
-      if (envFileIndex !== -1) await readFile(args[envFileIndex + 1], "utf8");
+      // The FIFO path is embedded in --command (bootstrap approach); drain it
+      // so the background tee writer can complete.
+      const cmdIdx = args.indexOf("--command");
+      if (cmdIdx !== -1) {
+        const fifoMatch = args[cmdIdx + 1].match(/'([^']+\/environment\.fifo)'/);
+        if (fifoMatch) await readFile(fifoMatch[1], "utf8");
+      }
       const n = nextNum++;
       const wsRef = `workspace:${n}`;
       const snapshot = {

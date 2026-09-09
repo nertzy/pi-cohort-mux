@@ -12,12 +12,11 @@
  * No existing workspaces/surfaces are altered; only OWN created workspace is closed.
  *
  * Environment sentinel note:
- *   The backend passes environment vars via a named FIFO (--env-file <fifo>).
- *   The real cmux server cannot open FIFOs (POSIX EACCES — macOS API restriction
- *   on the server side). Passing a non-empty environment causes workspace create
- *   to fail. This smoke therefore passes environment: {} (no FIFO) and verifies
- *   command delivery and cwd via an argv-based sentinel instead. The FIFO
- *   incompatibility is documented as a residual risk.
+ *   The backend passes environment vars via a child-side bootstrap (env-bootstrap.sh)
+ *   that reads from an owner-only mode-0600 FIFO. The bootstrap runs inside the
+ *   pane, so the cmux server never opens the FIFO. Both an argv-based sentinel
+ *   (command delivery) and an env-based sentinel (bootstrap injection) are
+ *   verified in the evidence file.
  *
  * On completion (pass or fail), writes a structured report to:
  *   /tmp/pi-cohort-mux-production-cmux-smoke.md
@@ -144,14 +143,15 @@ test(
       assert.match(probe.version, /^cmux \d+/, "version string starts with cmux N");
 
       // ── launch with real cmux CLI ─────────────────────────────────────────
-      // environment: {} avoids FIFO creation (cmux server cannot open FIFOs).
-      // The sentinel is passed as an argv arg; the child echoes it back so
-      // the test can verify this specific workspace's command was executed.
+      // Pass a non-empty environment so the bootstrap is exercised end-to-end.
+      // The sentinel is also passed as an argv arg for command-delivery proof.
+      // The child echoes both back so the test can verify this workspace's
+      // command, cwd, and environment injection all worked.
       launchLease = await backend.launch({
         command: process.execPath,
         args: [SENTINEL_WRITER, evidenceFile, sentinel],
         cwd: tempDir,
-        environment: {}, // empty — no FIFO created; see module-level note
+        environment: { TEST_SMOKE_SENTINEL: sentinel },
         runId: "smoke-run-1",
         childId: "smoke-child-1",
         signal: new AbortController().signal,
@@ -191,6 +191,10 @@ test(
 
       // cwd: proves the requested working directory was honored.
       assert.equal(evidence.cwd, expectedCwd, "child cwd matches the requested cwd from launch request");
+
+      // env sentinel: proves bootstrap injected the environment into the child.
+      assert.equal(evidence.envSentinelPresent, true, "env sentinel is present (bootstrap injected TEST_SMOKE_SENTINEL)");
+      assert.equal(evidence.envSentinelMatch, true, "env sentinel value matches the launch-time sentinel");
 
       report.evidenceSentinelEcho = evidence.sentinelEcho === sentinel;
       report.evidenceSentinelMatch = evidence.sentinelMatch;
@@ -272,9 +276,9 @@ test(
         }`,
         "",
         "## Notes",
-        "environment: {} used — cmux server cannot open FIFOs (EACCES, macOS API",
-        "restriction on server side). Env injection via --env-file FIFO is a known",
-        "contract gap; see residual risks.",
+        "Environment injected via child-side bootstrap (env-bootstrap.sh) reading",
+        "an owner-only FIFO. The cmux server never opens the FIFO; the bootstrap",
+        "runs inside the pane and exec()s the real command after injecting env.",
       ];
       await writeFile(
         "/tmp/pi-cohort-mux-production-cmux-smoke.md",
