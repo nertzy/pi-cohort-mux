@@ -55,26 +55,47 @@ function snapshot() {
   };
 }
 
-test("hands the requested environment to cmux through an owner-only named pipe", async () => {
+test("hands the requested environment through a child-side bootstrap reading an owner-only named pipe", async () => {
   const secret = "SYNTHETIC_SECRET_VALUE";
   let environmentPayload;
-  let environmentPipe;
+  let fifoPipePath;
+  let commandStr;
   let launchedOptions;
 
   const execFile = async (_command, args, options) => {
     if (args[0] === "workspace" && args[1] === "create") {
       launchedOptions = options;
-      const envFileIndex = args.indexOf("--env-file");
-      assert.notEqual(envFileIndex, -1);
-      environmentPipe = args[envFileIndex + 1];
 
-      const stats = await lstat(environmentPipe);
-      assert.equal(stats.isFIFO(), true);
-      assert.equal(stats.mode & 0o777, 0o600);
+      // --env-file must NOT appear in createArgs (bootstrap reads the FIFO itself)
+      assert.equal(args.includes("--env-file"), false, "--env-file must not appear in workspace create args");
 
-      environmentPayload = await readFile(environmentPipe, "utf8");
-      assert.equal(JSON.stringify(args).includes(secret), false);
-      assert.equal(JSON.stringify(options).includes(secret), false);
+      // The bootstrap command is in --command
+      const cmdIdx = args.indexOf("--command");
+      assert.notEqual(cmdIdx, -1, "--command must be present");
+      commandStr = args[cmdIdx + 1];
+
+      // Bootstrap path must appear in the command string
+      assert.ok(
+        commandStr.includes("env-bootstrap.sh"),
+        "command must reference env-bootstrap.sh",
+      );
+
+      // Extract the FIFO path from the command string (single-quoted token ending in /environment.fifo)
+      const fifoMatch = commandStr.match(/'([^']+\/environment\.fifo)'/)
+      assert.ok(fifoMatch, "FIFO path must appear in the command string");
+      fifoPipePath = fifoMatch[1];
+
+      // FIFO must exist, be a real FIFO, and be owner-only mode 0600
+      const stats = await lstat(fifoPipePath);
+      assert.equal(stats.isFIFO(), true, "pipe must be a FIFO");
+      assert.equal(stats.mode & 0o777, 0o600, "pipe must be mode 0600");
+
+      // Secret must not appear in args or options
+      assert.equal(JSON.stringify(args).includes(secret), false, "secret must not appear in args");
+      assert.equal(JSON.stringify(options).includes(secret), false, "secret must not appear in options");
+
+      // Read from the FIFO so the background tee writer can complete
+      environmentPayload = await readFile(fifoPipePath, "utf8");
       return { stdout: `OK ${WORKSPACE_REF}\n`, stderr: "" };
     }
     if (args[0] === "--id-format") {
@@ -100,7 +121,8 @@ test("hands the requested environment to cmux through an owner-only named pipe",
     `PI_COHORT_CHILD_HOST_CONFIG=/tmp/host-config.json\nTEST_ONLY_TOKEN=${secret}\n`,
   );
   assert.equal(launchedOptions.signal.aborted, false);
-  await assert.rejects(lstat(environmentPipe), { code: "ENOENT" });
+  // FIFO and its temp directory must be cleaned up
+  await assert.rejects(lstat(fifoPipePath), { code: "ENOENT" });
 });
 
 test("rejects secretPipePath instead of silently dropping an undefined transport", async () => {
