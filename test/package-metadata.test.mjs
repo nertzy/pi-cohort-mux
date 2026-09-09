@@ -39,6 +39,10 @@ test("declares an exact immutable Git commit dependency on pi-cohort core SPI", 
     `pi-cohort dependency must reference nertzy/pi-cohort fork, got: ${piCohortDep}`,
   );
   // Must not be a tarball, absolute path, or semver range
+  assert.ok(
+    piCohortDep.startsWith("git+https://"),
+    `pi-cohort dependency must use HTTPS URL (git+https://), got: ${piCohortDep}`,
+  );
   assert.equal(piCohortDep.startsWith("file:"), false, "dependency must not be a local file path");
   assert.equal(piCohortDep.startsWith("/"), false, "dependency must not be an absolute path");
   assert.equal(piCohortDep.startsWith("^"), false, "dependency must not be a semver caret range");

@@ -9,9 +9,11 @@ Active — pin will be replaced once the SPI lands in a published npm release.
 `pi-cohort-mux` pins `pi-cohort` at an exact immutable Git commit on the
 `nertzy/pi-cohort` fork rather than a semver range or the published npm version:
 
-```json
-"dependencies": {
-  "pi-cohort": "github:nertzy/pi-cohort#84eb447af4ee2c2c1fbda97ca6e14ee1aa35d5a9"
+```jsonc
+{
+  "dependencies": {
+    "pi-cohort": "git+https://github.com/nertzy/pi-cohort.git#84eb447af4ee2c2c1fbda97ca6e14ee1aa35d5a9"
+  }
 }
 ```
 
@@ -37,7 +39,7 @@ Pinning the exact commit on the public `nertzy/pi-cohort` fork gives:
 - **Immutability**: a commit SHA on a public GitHub fork cannot be force-pushed
   without creating a new SHA.
 - **No local path or tarball**: the dependency is resolvable from any machine
-  with network access (HTTPS or SSH).
+  with HTTPS network access; no GitHub SSH credentials are required.
 - **Private package preserved**: `pi-cohort-mux` remains `private: true`; the
   pin does not change the publish posture.
 
@@ -56,14 +58,12 @@ dependency and is intentionally **not** declared as a direct dependency here.
 ## Installation
 
 ```sh
-GIT_CONFIG_GLOBAL=/dev/null npm install --allow-git=all
+npm ci --allow-git root
 ```
 
-- `GIT_CONFIG_GLOBAL=/dev/null` prevents any local git config from rewriting
-  GitHub HTTPS URLs to SSH (ensuring portability).
-- `--allow-git=all` overrides the npm ≥12 default that blocks Git dependencies.
-  This flag is required at install time but is not stored in the lockfile;
-  callers must pass it explicitly.
+`--allow-git root` permits the root package's declared Git dependency under
+npm 12 without allowing additional transitive Git dependencies. The lockfile
+pins the HTTPS URL and commit; the install command supplies the permission.
 
 ## When to remove this pin
 
