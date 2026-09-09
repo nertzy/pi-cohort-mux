@@ -19,5 +19,11 @@
   ],
   "author": "Grant Hutchins",
   "license": "MIT",
-  "repository": "github:nertzy/pi-cohort-mux"
+  "repository": "github:nertzy/pi-cohort-mux",
+  "dependencies": {
+    "pi-cohort": "github:nertzy/pi-cohort#84eb447af4ee2c2c1fbda97ca6e14ee1aa35d5a9"
+  },
+  "devDependencies": {
+    "jiti": "^2.7.0"
+  }
 }
