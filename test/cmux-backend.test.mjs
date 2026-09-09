@@ -113,8 +113,13 @@ function makeFakeIo({
       return { stdout: JSON.stringify({ capabilities }) + "\n", stderr: "" };
     }
     if (args[0] === "workspace" && args[1] === "create") {
-      const envFileIndex = args.indexOf("--env-file");
-      if (envFileIndex !== -1) await readFile(args[envFileIndex + 1], "utf8");
+      // The FIFO path is embedded in the --command string (bootstrap approach).
+      // Drain it so the background tee writer can complete.
+      const cmdIdx = args.indexOf("--command");
+      if (cmdIdx !== -1) {
+        const fifoMatch = args[cmdIdx + 1].match(/'([^']+\/environment\.fifo)'/);
+        if (fifoMatch) await readFile(fifoMatch[1], "utf8");
+      }
       return { stdout: `OK ${FAKE_WS_REF}\n`, stderr: "" };
     }
     if (args[0] === "--id-format" && args[1] === "both" && args[2] === "list-pane-surfaces") {

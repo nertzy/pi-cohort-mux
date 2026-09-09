@@ -21,19 +21,30 @@
  * SPI event shape (ExecutionBackendEvent base):
  *   { timestamp, source: "mux", surface: { kind, id }, ...type-specific }
  *
- * Security note: request.environment reaches cmux through its --env-file input,
- * backed by a mode-0600 named pipe. Environment values never appear in argv, a
- * regular file, or logs. request.secretPipePath has no defined child-side
- * mapping in the v1 SPI transport, so launch rejects it instead of silently
- * dropping it — loud rejection is safer than undefined behavior.
+ * Security note: request.environment is transported through a mode-0600 named
+ * pipe (FIFO). The bootstrap script (env-bootstrap.sh) runs inside the pane,
+ * opens the FIFO itself, sets the env vars, then exec()s the real command.
+ * Environment values never appear in argv, a regular file, or logs. The FIFO
+ * path (not its contents) appears in the --command string — this is not a
+ * secret. request.secretPipePath has no defined child-side mapping in the v1
+ * SPI transport, so launch rejects it instead of silently dropping it — loud
+ * rejection is safer than undefined behavior.
  */
 import { execFile as execFileCallback, spawn as spawnProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createEventQueue } from "./event-queue.js";
+
+/**
+ * Path to the POSIX shell bootstrap that reads env from a FIFO then execs the
+ * real command. Resolved relative to this source file so it works regardless
+ * of the process CWD. Invoked via /bin/sh to avoid an executable-bit dependency.
+ */
+const BOOTSTRAP_PATH = fileURLToPath(new URL("./env-bootstrap.sh", import.meta.url));
 
 const execFile = promisify(execFileCallback);
 const CLI_DEADLINE_MS = 10_000;
@@ -378,9 +389,14 @@ export function createCmuxExecutionBackend({
         throw error;
       }
 
-      // Build shell command from command + args only. The environment is read
-      // from the owner-only FIFO by cmux before it sends workspace.create.
-      const command = buildCommand(request.command, request.args);
+      // When a FIFO is present, wrap the real command in the bootstrap script:
+      // sh env-bootstrap.sh <fifo> <cmd> [args...]
+      // The bootstrap runs inside the pane, reads env from the FIFO itself,
+      // then exec()s the real command. No --env-file; the FIFO path (not its
+      // contents) is the only trace in the createArgs.
+      const command = environmentPipe
+        ? buildCommand("/bin/sh", [BOOTSTRAP_PATH, environmentPipe.pipePath, request.command, ...request.args])
+        : buildCommand(request.command, request.args);
       const workspaceName = `pi-cohort-${randomUUID()}`;
       const createArgs = [
         "workspace", "create",
@@ -389,9 +405,6 @@ export function createCmuxExecutionBackend({
         "--focus", "false",
         "--command", command,
       ];
-      if (environmentPipe) {
-        createArgs.push("--env-file", environmentPipe.pipePath);
-      }
 
       let createOut;
       try {
