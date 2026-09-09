@@ -374,7 +374,7 @@ test("launch: rejects secretPipePath rather than silently dropping it", async ()
 
 // ─── launch: handle structure ─────────────────────────────────────────────────
 
-test("launch: handle has required identity fields from spike (UUID from snapshot)", async () => {
+test("launch: handle has SPI surface/display/data shape with UUID from snapshot", async () => {
   const { execFile, spawn } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest());
@@ -382,27 +382,27 @@ test("launch: handle has required identity fields from spike (UUID from snapshot
   const handle = lease.handle;
   assert.equal(handle.backend, "cmux");
   assert.equal(handle.protocolVersion, 1);
-  assert.equal(handle.kind, "pane");
-  assert.equal(handle.id, FAKE_SF_ID, "id is the surface UUID from snapshot");
-  assert.match(handle.display, /\S/, "display is non-empty");
+  assert.deepEqual(handle.surface, { kind: "pane", id: FAKE_SF_ID }, "surface has UUID from snapshot");
+  assert.equal(typeof handle.display.label, "string", "display.label is a string");
+  assert.match(handle.display.hint, /\S/, "display.hint is non-empty");
 
   await lease.release();
 });
 
-test("launch: handle reattach contains the nine key set from the spike", async () => {
+test("launch: handle data contains the nine key set from the spike", async () => {
   const { execFile, spawn } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest({ cwd: "/test/cwd" }));
 
-  const { reattach } = lease.handle;
-  assert.deepEqual(Object.keys(reattach).sort(), [
+  const { data } = lease.handle;
+  assert.deepEqual(Object.keys(data).sort(), [
     "cwd", "paneId", "paneRef", "surfaceId", "surfaceRef", "title", "type",
     "workspaceId", "workspaceRef",
   ]);
-  assert.equal(reattach.workspaceId, FAKE_WS_ID);
-  assert.equal(reattach.workspaceRef, FAKE_WS_REF);
-  assert.equal(reattach.surfaceId, FAKE_SF_ID);
-  assert.equal(reattach.cwd, "/test/cwd");
+  assert.equal(data.workspaceId, FAKE_WS_ID);
+  assert.equal(data.workspaceRef, FAKE_WS_REF);
+  assert.equal(data.surfaceId, FAKE_SF_ID);
+  assert.equal(data.cwd, "/test/cwd");
 
   await lease.release();
 });
@@ -462,7 +462,7 @@ test("launch: push and events.next deliver a fact through the lease queue", asyn
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest());
 
-  lease.push({ type: "unknown", fact: "test-event", source: "mux", surfaceId: lease.handle.id });
+  lease.push({ type: "unknown", fact: "test-event", source: "mux", surface: lease.handle.surface });
   const event = (await lease.events.next()).value;
   assert.equal(event.type, "unknown");
   assert.equal(event.fact, "test-event");
@@ -536,7 +536,8 @@ test("launch: overflow suspends queue and reconcile clears suspension with lost 
   assert.equal(reconciled[0].status, 23);
   assert.equal(reconciled[0].snapshot, true);
   assert.equal(reconciled[0].source, "mux");
-  assert.equal(reconciled[0].surfaceId, lease.handle.id);
+  assert.deepEqual(reconciled[0].surface, lease.handle.surface);
+  assert.equal(typeof reconciled[0].timestamp, "number");
   assert.equal(lease.suspended, false);
 
   // New pushes work after reconcile
@@ -604,10 +605,9 @@ test("reattach: present — returns status=present with snapshot then live facts
   const handle = {
     backend: "cmux",
     protocolVersion: 1,
-    kind: "pane",
-    id: FAKE_SF_ID,
-    display: `cmux:${FAKE_WS_REF}`,
-    reattach: {
+    surface: { kind: "pane", id: FAKE_SF_ID },
+    display: { label: `cmux:${FAKE_WS_REF}`, hint: `cmux:${FAKE_WS_REF}` },
+    data: {
       workspaceId: FAKE_WS_ID, workspaceRef: FAKE_WS_REF,
       paneId: FAKE_PN_ID, paneRef: FAKE_PN_REF,
       surfaceId: FAKE_SF_ID, surfaceRef: FAKE_SF_REF,
@@ -617,10 +617,14 @@ test("reattach: present — returns status=present with snapshot then live facts
 
   const result = await backend.reattach(handle);
   assert.equal(result.status, "present");
-  const snapshot = (await result.lease.events.next()).value;
-  assert.equal(snapshot.snapshot, true);
-  const live = (await result.lease.events.next()).value;
-  assert.equal(live.live, true);
+  const snapshotEvent = (await result.lease.events.next()).value;
+  assert.equal(snapshotEvent.snapshot, true);
+  assert.equal(snapshotEvent.source, "mux");
+  assert.equal(typeof snapshotEvent.timestamp, "number");
+  assert.deepEqual(snapshotEvent.surface, { kind: "pane", id: FAKE_SF_ID });
+  const liveEvent = (await result.lease.events.next()).value;
+  assert.equal(liveEvent.live, true);
+  assert.ok(liveEvent.timestamp >= snapshotEvent.timestamp, "live event timestamp must be >= snapshot");
   await result.lease.release();
 });
 
@@ -628,7 +632,7 @@ test("reattach: gone — list-pane-surfaces not_found maps to status=gone", asyn
   const { execFile, spawn } = makeFakeIo({ snapshotNotFound: true });
   const backend = createCmuxBackend({ execFile, spawn });
   const handle = {
-    reattach: { workspaceRef: FAKE_WS_REF, surfaceId: FAKE_SF_ID },
+    data: { workspaceRef: FAKE_WS_REF, surfaceId: FAKE_SF_ID },
   };
 
   const result = await backend.reattach(handle);
@@ -640,7 +644,7 @@ test("reattach: unknown — generic CLI error yields status=unknown with reason"
   const { execFile, spawn } = makeFakeIo({ snapshotError: err });
   const backend = createCmuxBackend({ execFile, spawn });
   const handle = {
-    reattach: { workspaceRef: FAKE_WS_REF, surfaceId: FAKE_SF_ID },
+    data: { workspaceRef: FAKE_WS_REF, surfaceId: FAKE_SF_ID },
   };
 
   const result = await backend.reattach(handle);
@@ -653,7 +657,7 @@ test("reattach: unknown — missing workspaceRef in handle yields status=unknown
   const { execFile, spawn } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
 
-  const result = await backend.reattach({ id: "surface-1" });
+  const result = await backend.reattach({ surface: { kind: "pane", id: "surface-1" } });
   assert.equal(result.status, "unknown");
   assert.ok(/workspaceRef/i.test(result.reason));
 });
@@ -664,8 +668,8 @@ test("close: calls workspace close with the handle's workspaceRef", async () => 
   const { execFile, spawn, calls } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const handle = {
-    id: FAKE_SF_ID,
-    reattach: { workspaceRef: FAKE_WS_REF },
+    surface: { kind: "pane", id: FAKE_SF_ID },
+    data: { workspaceRef: FAKE_WS_REF },
   };
 
   await backend.close(handle, "explicit_cleanup");
@@ -680,7 +684,7 @@ test("close: calls workspace close with the handle's workspaceRef", async () => 
 test("close: not_found is treated as idempotent absence — no error thrown", async () => {
   const { execFile, spawn } = makeFakeIo({ closeNotFound: true });
   const backend = createCmuxBackend({ execFile, spawn });
-  const handle = { id: FAKE_SF_ID, reattach: { workspaceRef: FAKE_WS_REF } };
+  const handle = { surface: { kind: "pane", id: FAKE_SF_ID }, data: { workspaceRef: FAKE_WS_REF } };
 
   await assert.doesNotReject(backend.close(handle, "explicit_cleanup"));
 });
@@ -688,7 +692,7 @@ test("close: not_found is treated as idempotent absence — no error thrown", as
 test("close: can be called twice idempotently when CLI always returns not_found", async () => {
   const { execFile, spawn } = makeFakeIo({ closeNotFound: true });
   const backend = createCmuxBackend({ execFile, spawn });
-  const handle = { id: FAKE_SF_ID, reattach: { workspaceRef: FAKE_WS_REF } };
+  const handle = { surface: { kind: "pane", id: FAKE_SF_ID }, data: { workspaceRef: FAKE_WS_REF } };
 
   await backend.close(handle, "explicit_cleanup");
   await backend.close(handle, "explicit_cleanup");
@@ -699,7 +703,7 @@ test("close: non-not_found CLI errors propagate (strict handle-keyed close)", as
   const err = new Error("permission denied");
   const { execFile, spawn } = makeFakeIo({ closeError: err });
   const backend = createCmuxBackend({ execFile, spawn });
-  const handle = { id: FAKE_SF_ID, reattach: { workspaceRef: FAKE_WS_REF } };
+  const handle = { surface: { kind: "pane", id: FAKE_SF_ID }, data: { workspaceRef: FAKE_WS_REF } };
 
   await assert.rejects(
     backend.close(handle, "explicit_cleanup"),
@@ -707,11 +711,11 @@ test("close: non-not_found CLI errors propagate (strict handle-keyed close)", as
   );
 });
 
-test("close: no-op when handle has no workspaceRef", async () => {
+test("close: no-op when handle has no workspaceRef (e.g. null data)", async () => {
   const { execFile, spawn, calls } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
 
-  await backend.close({ id: "surface-after-restart" }, "explicit_cleanup");
+  await backend.close({ surface: { kind: "pane", id: "surface-after-restart" }, data: null }, "explicit_cleanup");
 
   const closeCall = calls.find(
     (c) => c.type === "exec" && c.args[0] === "workspace" && c.args[1] === "close",

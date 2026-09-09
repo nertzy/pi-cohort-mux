@@ -15,10 +15,17 @@
  *   - release() stops the subscription without closing the surface.
  *   - No screen scraping, send-keys, focus stealing, or intercom env vars.
  *
+ * SPI handle shape (ExecutionSurfaceHandle):
+ *   { protocolVersion, backend, surface: { kind, id }, display: { label, hint }, data }
+ *
+ * SPI event shape (ExecutionBackendEvent base):
+ *   { timestamp, source: "mux", surface: { kind, id }, ...type-specific }
+ *
  * Security note: request.environment reaches cmux through its --env-file input,
  * backed by a mode-0600 named pipe. Environment values never appear in argv, a
  * regular file, or logs. request.secretPipePath has no defined child-side
- * mapping in the v1 SPI, so launch rejects it instead of silently dropping it.
+ * mapping in the v1 SPI transport, so launch rejects it instead of silently
+ * dropping it — loud rejection is safer than undefined behavior.
  */
 import { execFile as execFileCallback, spawn as spawnProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -114,11 +121,12 @@ function buildCommand(command, args) {
 
 /**
  * Returns true only for "not_found" CLI errors (workspace/surface gone).
+ * Matches the exact cmux error token to reduce false positives.
  * All other errors are transport failures and must propagate.
  */
 function isNotFound(error) {
   const text = (error?.message ?? "") + (error?.stderr ?? "");
-  return /not[_\s-]?found/i.test(text);
+  return /\bnot_found\b/i.test(text);
 }
 
 // ─── Workspace ref parsing ────────────────────────────────────────────────────
@@ -231,13 +239,17 @@ function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
 
 // ─── cmux event translation ───────────────────────────────────────────────────
 
-/** Translate a cmux push-event frame to an adapter fact. */
-function translateCmuxEvent(frame, surfaceId) {
+/**
+ * Translate a cmux push-event frame to an SPI-conforming adapter fact.
+ * surface must be an ExecutionSurfaceIdentity: { kind: string, id: string }.
+ */
+function translateCmuxEvent(frame, surface) {
   const name = frame.name;
+  const timestamp = Date.now();
   if (name === "surface.closed" || name === "workspace.closed" || name === "pane.closed") {
-    return { type: "surface_closed", requested: false, source: "mux", surfaceId };
+    return { type: "surface_closed", requested: false, source: "mux", timestamp, surface };
   }
-  return { type: "unknown", fact: "cmux_event", name: name ?? "unknown", source: "mux", surfaceId };
+  return { type: "unknown", fact: "cmux_event", name: name ?? "unknown", source: "mux", timestamp, surface };
 }
 
 // ─── Lease factory ────────────────────────────────────────────────────────────
@@ -254,8 +266,8 @@ function makeLease({ state, handle, request, eventQueue, subscription }) {
       state.reconciles += 1;
       const lost = eventQueue.lostAuthoritativeFact;
       const facts = lost
-        ? [{ ...lost, source: "mux", surfaceId: handle.id, snapshot: true }]
-        : [{ type: "unknown", fact: "snapshot", reason: "mux snapshot" }];
+        ? [{ ...lost, source: "mux", surface: handle.surface, timestamp: Date.now(), snapshot: true }]
+        : [{ type: "unknown", fact: "snapshot", reason: "mux snapshot", source: "mux", surface: handle.surface, timestamp: Date.now() }];
       eventQueue.resumeFromSuspension();
       return facts;
     },
@@ -402,23 +414,30 @@ export function createCmuxExecutionBackend({
 
       // Snapshot for UUID correlation (spike: three-way UUID correlation).
       const snapshot = await takeSnapshot(execFileFn, cli, workspaceRef);
-      const surface = snapshot.surfaces?.[0];
+      const snapshotSurface = snapshot.surfaces?.[0];
 
-      const handle = {
-        backend: "cmux",
-        protocolVersion: 1,
+      // SPI-conforming handle shape (ExecutionSurfaceHandle).
+      const surfaceIdentity = {
         kind: "pane",
-        id: surface?.id ?? snapshot.workspace_id,
-        display: `cmux:${workspaceRef}`,
-        reattach: {
+        id: snapshotSurface?.id ?? snapshot.workspace_id,
+      };
+      const handle = {
+        protocolVersion: 1,
+        backend: "cmux",
+        surface: surfaceIdentity,
+        display: {
+          label: `cmux:${workspaceRef}`,
+          hint: `cmux:${workspaceRef}`,
+        },
+        data: {
           workspaceId: snapshot.workspace_id,
           workspaceRef: snapshot.workspace_ref,
           paneId: snapshot.pane_id,
           paneRef: snapshot.pane_ref,
-          surfaceId: surface?.id ?? null,
-          surfaceRef: surface?.ref ?? null,
-          title: surface?.title ?? null,
-          type: surface?.type ?? null,
+          surfaceId: snapshotSurface?.id ?? null,
+          surfaceRef: snapshotSurface?.ref ?? null,
+          title: snapshotSurface?.title ?? null,
+          type: snapshotSurface?.type ?? null,
           cwd: request.cwd,
         },
       };
@@ -428,9 +447,15 @@ export function createCmuxExecutionBackend({
       // Wire subscription frames to the lease queue.
       const removeListener = subscription.onFrame((frame, error) => {
         if (error) {
-          eventQueue.push({ type: "backend_disconnected", source: "mux", reason: error.message });
+          eventQueue.push({
+            type: "backend_disconnected",
+            source: "mux",
+            reason: error.message,
+            timestamp: Date.now(),
+            surface: handle.surface,
+          });
         } else if (frame) {
-          eventQueue.push(translateCmuxEvent(frame, handle.id));
+          eventQueue.push(translateCmuxEvent(frame, handle.surface));
         }
       });
 
@@ -443,32 +468,50 @@ export function createCmuxExecutionBackend({
     // ── reattach ───────────────────────────────────────────────────────────
 
     async reattach(handle) {
-      const workspaceRef = handle?.reattach?.workspaceRef;
+      const workspaceRef = handle?.data?.workspaceRef;
       if (!workspaceRef) {
         return { status: "unknown", reason: "handle missing workspaceRef; cannot query cmux" };
       }
 
       try {
         const snapshot = await takeSnapshot(execFileFn, cli, workspaceRef);
-        const surface = handle.reattach?.surfaceId
-          ? snapshot.surfaces?.find((s) => s.id === handle.reattach.surfaceId)
+        const snapshotSurface = handle.data?.surfaceId
+          ? snapshot.surfaces?.find((s) => s.id === handle.data.surfaceId)
           : snapshot.surfaces?.[0];
 
-        if (!surface) {
+        if (!snapshotSurface) {
           return { status: "gone" };
         }
 
-        // Reattach lease starts with one snapshot fact and one live fact,
-        // matching the conformance contract for present reattachment.
-        const eventQueue = createEventQueue();
-        eventQueue.push({ type: "surface_closed", requested: false, snapshot: true });
-        eventQueue.push({ type: "exited", status: 0, signal: null, live: true });
-
+        const reattachedSurface = { kind: "pane", id: snapshotSurface.id };
         const reattachedHandle = {
           ...handle,
-          id: surface.id,
-          display: `cmux:${workspaceRef}`,
+          surface: reattachedSurface,
+          display: { label: `cmux:${workspaceRef}`, hint: `cmux:${workspaceRef}` },
         };
+
+        // Reattach lease starts with one snapshot fact and one live fact,
+        // matching the conformance contract for present reattachment.
+        // Timestamps are non-decreasing: snapshot first, live second.
+        const now = Date.now();
+        const eventQueue = createEventQueue();
+        eventQueue.push({
+          type: "surface_closed",
+          requested: false,
+          snapshot: true,
+          source: "mux",
+          timestamp: now,
+          surface: reattachedSurface,
+        });
+        eventQueue.push({
+          type: "exited",
+          status: 0,
+          signal: null,
+          live: true,
+          source: "mux",
+          timestamp: now + 1,
+          surface: reattachedSurface,
+        });
 
         const lease = {
           handle: reattachedHandle,
@@ -476,7 +519,7 @@ export function createCmuxExecutionBackend({
           request: {},
           async reconcile() {
             state.reconciles += 1;
-            return [{ type: "unknown", fact: "snapshot", reason: "reattach reconcile" }];
+            return [{ type: "unknown", fact: "snapshot", reason: "reattach reconcile", source: "mux", surface: reattachedSurface, timestamp: Date.now() }];
           },
           async release() {
             eventQueue.finish();
@@ -498,16 +541,16 @@ export function createCmuxExecutionBackend({
     // ── close ──────────────────────────────────────────────────────────────
 
     async close(handle, _reason) {
-      const workspaceRef = handle?.reattach?.workspaceRef;
+      const workspaceRef = handle?.data?.workspaceRef;
       if (!workspaceRef) return; // no-op: nothing to close
 
       try {
         await execFileFn(cli, ["workspace", "close", workspaceRef], { timeout: CLI_DEADLINE_MS });
-        state.closed.add(handle.id ?? workspaceRef);
+        state.closed.add(handle.surface?.id ?? workspaceRef);
       } catch (error) {
         if (isNotFound(error)) {
           // Already gone — idempotent absence, not an error.
-          state.closed.add(handle.id ?? workspaceRef);
+          state.closed.add(handle.surface?.id ?? workspaceRef);
           return;
         }
         // Transport failure: propagate (strict handle-keyed close).
