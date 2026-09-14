@@ -9,6 +9,7 @@ import test from "node:test";
 
 const execFile = promisify(execFileCallback);
 const cliDeadline = 5_000;
+const disappearancePoll = 100;
 const reporterPath = path.resolve("test/fixtures/cmux-parity/reporter.mjs");
 
 function cmux(...args) {
@@ -149,7 +150,9 @@ async function startReporter(directory) {
   await chmod(socketPath, 0o600);
   return {
     socketPath,
-    ready: withDeadline(ready, `reporter ready did not arrive within ${cliDeadline}ms`),
+    waitUntilReady() {
+      return withDeadline(ready, `reporter ready did not arrive within ${cliDeadline}ms`);
+    },
     async shutdown() {
       const ack = withDeadline(new Promise((resolve, reject) => {
         if (!connection) return reject(new Error("reporter never connected"));
@@ -175,6 +178,23 @@ async function createWorkspace({ name, cwd, command }) {
 async function snapshot(workspaceRef) {
   const { stdout } = await execFile("cmux", ["--id-format", "both", "list-pane-surfaces", "--workspace", workspaceRef, "--json"], { timeout: cliDeadline });
   return JSON.parse(stdout);
+}
+
+async function waitUntilSnapshotGone(workspaceRef) {
+  const end = Date.now() + cliDeadline;
+  while (true) {
+    try {
+      await snapshot(workspaceRef);
+    } catch (error) {
+      const text = (error?.message ?? "") + (error?.stderr ?? "");
+      if (/\bnot_found\b/i.test(text)) return;
+      throw error;
+    }
+    if (Date.now() >= end) {
+      throw new Error(`workspace remained in snapshots after close: ${workspaceRef}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, disappearancePoll));
+  }
 }
 
 test("real public cmux backend proves workspace/surface lifecycle parity end to end", { skip }, async () => {
@@ -206,7 +226,9 @@ test("real public cmux backend proves workspace/surface lifecycle parity end to 
     const { stdout: callerAfter } = await cmux("current-workspace");
     assert.equal(callerAfter.trim(), callerBefore.trim(), "--focus false must not move caller focus");
 
-    const ready = await reporter.ready;
+    // Start the deadline after workspace creation; setup time must not consume
+    // the child's full connection window.
+    const ready = await reporter.waitUntilReady();
     assert.equal(ready.cwd, expectedCwd);
     assert.ok(ready.workspaceId);
     assert.ok(ready.surfaceId);
@@ -257,7 +279,7 @@ test("real public cmux backend proves workspace/surface lifecycle parity end to 
     await cmux("workspace", "close", reattached.workspaceRef);
     await Promise.all([surfaceClose, workspaceClose]);
     workspaceRef = undefined;
-    await assert.rejects(snapshot(reattached.workspaceRef), /not_found/i);
+    await waitUntilSnapshotGone(reattached.workspaceRef);
   } finally {
     if (workspaceRef) await cmux("workspace", "close", workspaceRef).catch(() => {});
     if (decoyRef) await cmux("workspace", "close", decoyRef).catch(() => {});

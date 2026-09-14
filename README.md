@@ -10,6 +10,16 @@ Planned transport scope is [cmux](https://github.com/manaflow-ai/cmux) and tmux
 pane execution. Pane command text and persistent environment files must never
 contain secrets.
 
+## Installation
+
+This package supports `pi-cohort` 6.1.0 and later compatible 6.x releases;
+6.1.0 is the first release that published the execution-backend SPI and
+testkit. Install from the npm registry:
+
+```sh
+npm ci
+```
+
 ## Development
 
 ```sh
