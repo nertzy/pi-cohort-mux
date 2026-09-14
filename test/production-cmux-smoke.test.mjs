@@ -38,6 +38,8 @@ const execFile = promisify(execFileCallback);
 const SMOKE_FLAG = "PI_COHORT_MUX_PRODUCTION_CMUX_SMOKE";
 const EVIDENCE_DEADLINE_MS = 15_000;
 const CLI_DEADLINE_MS = 10_000;
+const DISAPPEARANCE_DEADLINE_MS = 5_000;
+const DISAPPEARANCE_POLL_MS = 100;
 const SENTINEL_WRITER = fileURLToPath(
   new URL("fixtures/production-smoke/sentinel-writer.mjs", import.meta.url),
 );
@@ -79,18 +81,28 @@ async function pollForFile(filePath, deadline = EVIDENCE_DEADLINE_MS) {
   throw new Error(`Evidence file not found within ${deadline}ms: ${filePath}`);
 }
 
-/** Returns true only when list-pane-surfaces returns a not_found error. */
-async function verifyGone(workspaceRef) {
-  try {
-    await execFile(
-      "cmux",
-      ["--id-format", "both", "list-pane-surfaces", "--workspace", workspaceRef, "--json"],
-      { timeout: CLI_DEADLINE_MS },
-    );
-    return false;
-  } catch (error) {
-    const text = (error?.message ?? "") + (error?.stderr ?? "");
-    return /not_found/i.test(text);
+function isNotFound(error) {
+  const text = (error?.message ?? "") + (error?.stderr ?? "");
+  return /\bnot_found\b/i.test(text);
+}
+
+/** Poll until list-pane-surfaces confirms the asynchronously closed workspace is absent. */
+async function verifyGone(workspaceRef, deadline = DISAPPEARANCE_DEADLINE_MS) {
+  const end = Date.now() + deadline;
+  while (true) {
+    try {
+      await execFile(
+        "cmux",
+        ["--id-format", "both", "list-pane-surfaces", "--workspace", workspaceRef, "--json"],
+        { timeout: CLI_DEADLINE_MS },
+      );
+    } catch (error) {
+      if (isNotFound(error)) return true;
+      throw error;
+    }
+
+    if (Date.now() >= end) return false;
+    await new Promise((resolve) => setTimeout(resolve, DISAPPEARANCE_POLL_MS));
   }
 }
 
@@ -100,9 +112,8 @@ test(
   "production cmux backend: launch → evidence → release-retains → reattach → close → verify-gone",
   { skip: skipReason || false },
   async () => {
-    // Use empty environment to avoid FIFO creation.
-    // The real cmux server cannot open FIFOs (EACCES, macOS API restriction).
-    // Command delivery and cwd are verified via an argv-based sentinel instead.
+    // A non-empty environment exercises the owner-only FIFO bootstrap. The
+    // child opens that FIFO; cmux receives only its path in the command argv.
     const backend = createCmuxBackend(); // real cmux CLI — no injection
 
     // State tracked across the try/finally so cleanup is unconditional.
@@ -112,6 +123,8 @@ test(
     let reattachLease;
     let launchedWorkspaceRef;
     let testPassed = false;
+    let primaryError;
+    const cleanupErrors = [];
 
     // Report accumulator — written in finally on both pass and fail paths.
     const report = {
@@ -232,23 +245,55 @@ test(
       report.closedAndGone = gone;
       launchedWorkspaceRef = undefined; // cleared — prevents double-close in finally
       testPassed = true;
-
+    } catch (error) {
+      primaryError = error;
     } finally {
       // Unconditional cleanup — ensures no owned workspace leaks on failure.
-      if (launchLease) await launchLease.release().catch(() => {});
-      if (reattachLease) await reattachLease.release().catch(() => {});
-      if (launchedWorkspaceRef) {
-        // Workspace was not closed by the test body (failed before close step).
-        await execFile(
-          "cmux",
-          ["workspace", "close", launchedWorkspaceRef],
-          { timeout: CLI_DEADLINE_MS },
-        ).catch(() => {}); // not_found is fine — idempotent
+      for (const lease of [launchLease, reattachLease]) {
+        if (!lease) continue;
+        try {
+          await lease.release();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
       }
-      if (tempDir) await rm(tempDir, { recursive: true, force: true });
+      if (launchedWorkspaceRef) {
+        // Workspace was not confirmed gone by the test body. Close the exact
+        // owned ref, then independently wait for authoritative absence.
+        try {
+          await execFile(
+            "cmux",
+            ["workspace", "close", launchedWorkspaceRef],
+            { timeout: CLI_DEADLINE_MS },
+          );
+        } catch (error) {
+          if (!isNotFound(error)) cleanupErrors.push(error);
+        }
 
+        try {
+          const gone = await verifyGone(launchedWorkspaceRef);
+          if (!gone) {
+            throw new Error(
+              `Owned workspace still present ${DISAPPEARANCE_DEADLINE_MS}ms after fallback close: ${launchedWorkspaceRef}`,
+            );
+          }
+          launchedWorkspaceRef = undefined;
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (tempDir) {
+        try {
+          await rm(tempDir, { recursive: true, force: true });
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+
+      report.primaryFailure = primaryError?.message;
+      report.cleanupErrors = cleanupErrors.map((error) => error.message);
       report.ownedWorkspaceCleanedUp = !launchedWorkspaceRef;
-      report.rawExit = testPassed ? 0 : 1;
+      report.rawExit = testPassed && cleanupErrors.length === 0 ? 0 : 1;
 
       // Write required report to /tmp.
       const reportLines = [
@@ -269,6 +314,8 @@ test(
         `- release retained surface: ${report.releaseRetained ?? false}`,
         `- reattach status: ${report.reattachStatus ?? "(not attempted)"}`,
         `- closed and gone: ${report.closedAndGone ?? false}`,
+        `- primary failure: ${report.primaryFailure ?? "none"}`,
+        `- cleanup errors: ${report.cleanupErrors.length > 0 ? report.cleanupErrors.join("; ") : "none"}`,
         `- workspace cleanup evidence: ${
           report.ownedWorkspaceCleanedUp
             ? "no owned workspace remains"
@@ -280,11 +327,26 @@ test(
         "an owner-only FIFO. The cmux server never opens the FIFO; the bootstrap",
         "runs inside the pane and exec()s the real command after injecting env.",
       ];
-      await writeFile(
-        "/tmp/pi-cohort-mux-production-cmux-smoke.md",
-        reportLines.join("\n") + "\n",
-        "utf8",
-      ).catch(() => {});
+      try {
+        await writeFile(
+          "/tmp/pi-cohort-mux-production-cmux-smoke.md",
+          reportLines.join("\n") + "\n",
+          "utf8",
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+
+    if (primaryError && cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [primaryError, ...cleanupErrors],
+        "Production cmux smoke and its cleanup both failed",
+      );
+    }
+    if (primaryError) throw primaryError;
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, "Production cmux smoke cleanup failed");
     }
   },
 );
@@ -292,6 +354,11 @@ test(
 // ─── Probe diagnostic (always included, low overhead) ────────────────────────
 
 test("production cmux smoke: probe diagnostic — opt-in guard and availability", () => {
+  assert.equal(isNotFound(new Error("Error: not_found: Pane not found")), true);
+  assert.equal(isNotFound(new Error("Error: NOT_FOUND: Pane not found")), true);
+  assert.equal(isNotFound(new Error("Error: not_foundation failure")), false);
+  assert.equal(isNotFound(new Error("Error: transport failure")), false);
+
   if (!optedIn) {
     // Not opted in: skipReason must be a non-empty string.
     assert.equal(typeof skipReason, "string", "skip reason is a string when not opted in");
