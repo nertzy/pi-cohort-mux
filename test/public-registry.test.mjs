@@ -3,7 +3,7 @@ import test from "node:test";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url);
-const mux = await jiti.import(new URL("../src/index.js", import.meta.url).href);
+const mux = await jiti.import(new URL("../packages/pi-cohort-mux-cmux/src/index.js", import.meta.url).href);
 const { selectExecutionBackend } = await jiti.import(
   "pi-cohort/execution-backend",
 );

@@ -17,7 +17,7 @@ import { readFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { createJiti } from "jiti";
-import { createCmuxBackend } from "../src/cmux-backend.js";
+import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
 
 const jiti = createJiti(import.meta.url);
 const kit = await jiti.import("pi-cohort/execution-backend-testkit");
@@ -53,15 +53,47 @@ class FakeEventsChild extends EventEmitter {
 
 // ─── Stateful fake IO factory ─────────────────────────────────────────────────
 
+// launch() derives the parent workspace from the environment; pin it hermetically.
+process.env.CMUX_WORKSPACE_ID ??= "ws-id-parent";
+
 /**
  * Creates a stateful fake cmux CLI (execFile + spawn) for conformance testing.
- * Tracks created workspaces and closed workspaces so reattach-after-close
+ * Models bridge-parity placement: children are surfaces in a helper pane of the
+ * parent workspace. Tracks created and closed surfaces so reattach-after-close
  * returns "gone" and reattach-without-close returns "present".
  */
 function makeStatefulFakeIo() {
-  const workspaces = new Map(); // workspaceRef → snapshot
-  const closedWorkspaces = new Set();
+  const surfaces = new Map(); // surfaceRef → { paneRef, surface: {...} }
+  const panes = new Map(); // paneRef → { paneId, surfaceRefs: Set }
+  const workspaceRef = "workspace:1";
+  const workspaceId = "ws-id-parent";
   let nextNum = 1;
+
+  function snapshotFor(paneRef) {
+    if (paneRef) {
+      const pane = panes.get(paneRef);
+      if (!pane) {
+        const err = Object.assign(new Error("not_found"), {
+          stderr: "Error: not_found: Pane not found",
+        });
+        throw err;
+      }
+      return {
+        workspace_id: workspaceId,
+        workspace_ref: workspaceRef,
+        pane_id: pane.paneId,
+        pane_ref: paneRef,
+        surfaces: [...pane.surfaceRefs].map((ref) => surfaces.get(ref).surface),
+      };
+    }
+    return {
+      workspace_id: workspaceId,
+      workspace_ref: workspaceRef,
+      pane_id: "pane-id-0",
+      pane_ref: "pane:0",
+      surfaces: [...surfaces.values()].map((entry) => entry.surface),
+    };
+  }
 
   async function execFile(_cli, args, _opts) {
     if (args[0] === "--version") {
@@ -70,7 +102,7 @@ function makeStatefulFakeIo() {
     if (args[0] === "capabilities") {
       return { stdout: JSON.stringify({ capabilities: ["events.v1"] }) + "\n", stderr: "" };
     }
-    if (args[0] === "workspace" && args[1] === "create") {
+    if (args[0] === "new-pane" || args[0] === "new-surface") {
       // The FIFO path is embedded in --command (bootstrap approach); drain it
       // so the background tee writer can complete.
       const cmdIdx = args.indexOf("--command");
@@ -78,40 +110,41 @@ function makeStatefulFakeIo() {
         const fifoMatch = args[cmdIdx + 1].match(/'([^']+\/environment\.fifo)'/);
         if (fifoMatch) await readFile(fifoMatch[1], "utf8");
       }
+      let paneRef;
+      if (args[0] === "new-pane") {
+        paneRef = `pane:${nextNum}`;
+        panes.set(paneRef, { paneId: `pane-id-${nextNum}`, surfaceRefs: new Set() });
+      } else {
+        paneRef = args[args.indexOf("--pane") + 1];
+        if (!panes.has(paneRef)) {
+          const err = Object.assign(new Error("not_found"), {
+            stderr: "Error: not_found: Pane not found",
+          });
+          throw err;
+        }
+      }
       const n = nextNum++;
-      const wsRef = `workspace:${n}`;
-      const snapshot = {
-        workspace_id: `ws-id-${n}`,
-        workspace_ref: wsRef,
-        pane_id: `pane-id-${n}`,
-        pane_ref: `pane:${n}`,
-        surfaces: [
-          { id: `sf-id-${n}`, ref: `surface:${n}`, title: "conformance", type: "terminal" },
-        ],
-      };
-      workspaces.set(wsRef, snapshot);
-      return { stdout: `OK ${wsRef}\n`, stderr: "" };
+      const surfaceRef = `surface:${n}`;
+      const surface = { id: `sf-id-${n}`, ref: surfaceRef, title: "conformance", type: "terminal" };
+      surfaces.set(surfaceRef, { paneRef, surface });
+      panes.get(paneRef).surfaceRefs.add(surfaceRef);
+      return { stdout: `OK ${surfaceRef} ${paneRef} ${workspaceRef}\n`, stderr: "" };
     }
     if (args[0] === "--id-format" && args[1] === "both" && args[2] === "list-pane-surfaces") {
-      const wsIdx = args.indexOf("--workspace");
-      const wsRef = args[wsIdx + 1];
-      if (closedWorkspaces.has(wsRef)) {
-        const err = Object.assign(new Error("not_found"), {
-          stderr: "Error: not_found: Workspace not found",
-        });
-        throw err;
-      }
-      const snap = workspaces.get(wsRef);
-      if (!snap) {
-        const err = Object.assign(new Error("not_found"), {
-          stderr: "Error: not_found: Workspace not found",
-        });
-        throw err;
-      }
-      return { stdout: JSON.stringify(snap) + "\n", stderr: "" };
+      const paneIdx = args.indexOf("--pane");
+      return { stdout: JSON.stringify(snapshotFor(paneIdx === -1 ? null : args[paneIdx + 1])) + "\n", stderr: "" };
     }
-    if (args[0] === "workspace" && args[1] === "close") {
-      closedWorkspaces.add(args[2]);
+    if (args[0] === "close-surface") {
+      const surfaceRef = args[args.indexOf("--surface") + 1];
+      const entry = surfaces.get(surfaceRef);
+      if (!entry) {
+        const err = Object.assign(new Error("not_found"), {
+          stderr: "Error: not_found: Surface not found",
+        });
+        throw err;
+      }
+      panes.get(entry.paneRef)?.surfaceRefs.delete(surfaceRef);
+      surfaces.delete(surfaceRef);
       return { stdout: "", stderr: "" };
     }
     throw new Error(`Unexpected fake cmux exec: ${args.join(" ")}`);

@@ -3,17 +3,26 @@
  *
  * Implements the v1 execution-backend SPI:
  *   detect()          — probe cmux availability and capabilities
- *   launch(request)   — create a workspace surface, subscribe to events
+ *   launch(request)   — add a child surface to the parent workspace's helper pane
  *   reattach(handle)  — reconnect to an existing surface by opaque handle
- *   close(handle)     — close a workspace surface by handle (idempotent on not_found)
+ *   close(handle)     — close the owned surface by handle (idempotent on not_found)
+ *
+ * Placement mirrors the cohort bridge: children are terminal tabs in one
+ * right-side helper pane inside the PARENT workspace — never new workspaces.
+ * The first child creates the pane (no idle shell surface); later children
+ * add surfaces to it; cmux collapses the pane when its last surface closes.
  *
  * Grounded in the cmux-parity spike (doc/spikes/cmux-parity.md):
- *   - Events subscription starts and acks BEFORE workspace create.
+ *   - Events subscription starts and acks BEFORE surface create.
  *   - Handle UUID comes from the snapshot (list-pane-surfaces --id-format both).
+ *   - Only frames that name the owned surface/pane/workspace reach the lease;
+ *     children share the parent workspace, so unfiltered events are unsafe.
  *   - close() maps only "not_found" to idempotent absence; other errors propagate.
  *   - reattach() maps "not_found" to { status: "gone" }; other errors to "unknown".
  *   - release() stops the subscription without closing the surface.
  *   - No screen scraping, send-keys, focus stealing, or intercom env vars.
+ *   - Inherited CMUX_* env vars are scrubbed from the child environment so the
+ *     new surface's own identity (set by cmux) always wins.
  *
  * SPI handle shape (ExecutionSurfaceHandle):
  *   { protocolVersion, backend, surface: { kind, id }, display: { label, hint }, data }
@@ -31,86 +40,19 @@
  * rejection is safer than undefined behavior.
  */
 import { execFile as execFileCallback, spawn as spawnProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { createEventQueue } from "./event-queue.js";
-
-/**
- * Path to the POSIX shell bootstrap that reads env from a FIFO then execs the
- * real command. Resolved relative to this source file so it works regardless
- * of the process CWD. Invoked via /bin/sh to avoid an executable-bit dependency.
- */
-const BOOTSTRAP_PATH = fileURLToPath(new URL("./env-bootstrap.sh", import.meta.url));
+import {
+  createEnvironmentPipe,
+  createEventQueue,
+  createLease,
+  environmentBootstrapPath,
+  serializeEnvironment,
+} from "pi-cohort-mux";
 
 const execFile = promisify(execFileCallback);
 const CLI_DEADLINE_MS = 10_000;
 const ACK_DEADLINE_MS = 10_000;
-
-function serializeEnvironment(environment) {
-  return Object.entries(environment).map(([key, value]) => {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-      throw new Error("cmux backend cannot encode an environment variable name");
-    }
-    if (typeof value !== "string" || /[\r\n\0]/.test(value) || value.trim() !== value) {
-      throw new Error(`cmux backend cannot encode environment variable ${key}`);
-    }
-    if (value.length >= 2 && (
-      (value.startsWith("\"") && value.endsWith("\""))
-      || (value.startsWith("'") && value.endsWith("'"))
-    )) {
-      throw new Error(`cmux backend cannot encode environment variable ${key}`);
-    }
-    return `${key}=${value}\n`;
-  }).join("");
-}
-
-function startNamedPipeWriter(pipePath, payload) {
-  const child = spawnProcess("/usr/bin/tee", [pipePath], {
-    stdio: ["pipe", "ignore", "pipe"],
-  });
-  const completion = new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      if (code === 0) resolve();
-      else reject(new Error(`environment pipe writer exited with code ${code}, signal ${signal}`));
-    });
-  });
-  child.stdin.end(payload, "utf8");
-  return {
-    completion,
-    abort() {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    },
-  };
-}
-
-async function createEnvironmentPipe(payload) {
-  if (payload === "") return undefined;
-
-  const directory = await mkdtemp(join(tmpdir(), "pi-cohort-mux-env-"));
-  const pipePath = join(directory, "environment.fifo");
-  try {
-    await execFile("mkfifo", ["-m", "600", pipePath]);
-  } catch (error) {
-    await rm(directory, { recursive: true, force: true });
-    throw error;
-  }
-
-  const writer = startNamedPipeWriter(pipePath, payload);
-  return {
-    pipePath,
-    writer,
-    async cleanup() {
-      writer.abort();
-      await writer.completion.catch(() => {});
-      await rm(directory, { recursive: true, force: true });
-    },
-  };
-}
+const BOOTSTRAP_PATH = environmentBootstrapPath;
 
 // ─── Shell-safe command building ──────────────────────────────────────────────
 
@@ -140,26 +82,60 @@ function isNotFound(error) {
   return /\bnot_found\b/i.test(text);
 }
 
-// ─── Workspace ref parsing ────────────────────────────────────────────────────
+// ─── Environment scrubbing ──────────────────────────────────────────────────
 
-/** Parse "OK workspace:N\n" from cmux workspace create stdout. */
-function parseWorkspaceRef(output) {
-  const match = output.trim().match(/^OK (workspace:\d+)$/);
-  if (!match) {
-    throw new Error(`Unexpected cmux workspace create output: ${JSON.stringify(output.trim())}`);
+/**
+ * Drop inherited CMUX_* variables. The new surface receives its own workspace,
+ * surface, pane, and socket identity from cmux; forwarding the parent's values
+ * through the env pipe would overwrite them and misroute child automation.
+ */
+function scrubMuxEnvironment(environment) {
+  const scrubbed = {};
+  for (const [key, value] of Object.entries(environment ?? {})) {
+    if (key.startsWith("CMUX_")) continue;
+    scrubbed[key] = value;
   }
-  return match[1];
+  return scrubbed;
+}
+
+// ─── Surface ref parsing ─────────────────────────────────────────────────────
+
+/** Parse "OK surface:N pane:M workspace:K" from new-pane/new-surface stdout. */
+function parseCreateRefs(output) {
+  const text = output.trim();
+  const surface = text.match(/(?:^|\s)(surface:\d+)(?:\s|$)/);
+  const pane = text.match(/(?:^|\s)(pane:\d+)(?:\s|$)/);
+  const workspace = text.match(/(?:^|\s)(workspace:\d+)(?:\s|$)/);
+  if (!surface || !workspace) {
+    throw new Error(`Unexpected cmux create output: ${JSON.stringify(text)}`);
+  }
+  return { surfaceRef: surface[1], paneRef: pane?.[1] ?? null, workspaceRef: workspace[1] };
+}
+
+/** Parse "OK pane:M" from list/create output that carries no surface. */
+function parsePaneRef(output) {
+  const match = output.trim().match(/(?:^|\s)(pane:\d+)(?:\s|$)/);
+  return match?.[1] ?? null;
 }
 
 // ─── Snapshot (list-pane-surfaces) ───────────────────────────────────────────
 
-async function takeSnapshot(execFileFn, cli, workspaceRef) {
-  const { stdout } = await execFileFn(
-    cli,
-    ["--id-format", "both", "list-pane-surfaces", "--workspace", workspaceRef, "--json"],
-    { timeout: CLI_DEADLINE_MS },
-  );
+async function takeSnapshot(execFileFn, cli, workspaceRef, paneRef) {
+  const args = ["--id-format", "both", "list-pane-surfaces", "--workspace", workspaceRef, "--json"];
+  if (paneRef) args.push("--pane", paneRef);
+  const { stdout } = await execFileFn(cli, args, { timeout: CLI_DEADLINE_MS });
   return JSON.parse(stdout);
+}
+
+/** True when a cmux event frame names this lease's surface, pane, or workspace.
+ * The most specific identity present on the frame must be ours: foreign surface
+ * and pane events are dropped; workspace-scoped frames (no surface/pane id)
+ * apply to every child in the parent workspace. */
+function ownsFrame(frame, owned) {
+  if (frame.surface_id) return frame.surface_id === owned.surfaceId;
+  if (frame.pane_id) return frame.pane_id === owned.paneId;
+  if (frame.workspace_id) return frame.workspace_id === owned.workspaceId;
+  return false;
 }
 
 // ─── Events subscription ──────────────────────────────────────────────────────
@@ -263,44 +239,6 @@ function translateCmuxEvent(frame, surface) {
   return { type: "unknown", fact: "cmux_event", reason: "unrecognized cmux event", source: "mux", timestamp, surface };
 }
 
-// ─── Lease factory ────────────────────────────────────────────────────────────
-
-function makeLease({ state, handle, request, eventQueue, subscription }) {
-  let releaseCount = 0;
-
-  return {
-    handle,
-    events: eventQueue.events,
-    request,
-
-    async reconcile() {
-      state.reconciles += 1;
-      const lost = eventQueue.lostAuthoritativeFact;
-      const facts = lost
-        ? [{ ...lost, source: "mux", surface: handle.surface, timestamp: Date.now(), snapshot: true }]
-        : [{ type: "unknown", fact: "snapshot", reason: "mux snapshot", source: "mux", surface: handle.surface, timestamp: Date.now() }];
-      eventQueue.resumeFromSuspension();
-      return facts;
-    },
-
-    async release() {
-      if (releaseCount > 0) return;
-      releaseCount += 1;
-      state.releaseCount += 1;
-      if (subscription) {
-        subscription.removeListener?.();
-        await subscription.stop();
-      }
-      eventQueue.finish();
-    },
-
-    push: (event) => eventQueue.push(event),
-    get suspended() { return eventQueue.suspended; },
-    get released() { return eventQueue.released; },
-    get queuedEvents() { return eventQueue.queuedEvents; },
-  };
-}
-
 // ─── Public factory ───────────────────────────────────────────────────────────
 
 /**
@@ -324,6 +262,7 @@ export function createCmuxExecutionBackend({
     subscriptions: 0,
     reconciles: 0,
     lastRequest: undefined,
+    helperPane: null,
   };
 
   return {
@@ -359,20 +298,24 @@ export function createCmuxExecutionBackend({
         );
       }
 
-      const environmentPayload = serializeEnvironment(request.environment);
+      const parentWorkspace = process.env.CMUX_WORKSPACE_ID;
+      if (!parentWorkspace) {
+        throw new Error("cmux backend requires CMUX_WORKSPACE_ID; launch outside cmux is not supported");
+      }
 
-      // Observe (subscribe) before start (workspace create) — spike ordering.
+      const environmentPayload = serializeEnvironment(scrubMuxEnvironment(request.environment));
+
+      // Observe (subscribe) before start (surface create) — spike ordering.
       state.trace.push("observe");
       state.lastRequest = request;
       state.launches.push(request);
 
       const subscription = startSubscription(spawnFn, cli, [
-        "workspace.created", "surface.created", "surface.closed",
-        "pane.closed", "workspace.closed",
+        "surface.closed", "pane.closed", "workspace.closed",
       ]);
       state.subscriptions += 1;
 
-      // Wait for ack before creating workspace so no events are missed.
+      // Wait for ack before creating the surface so no events are missed.
       try {
         await subscription.ack;
       } catch (error) {
@@ -394,19 +337,30 @@ export function createCmuxExecutionBackend({
       // The bootstrap runs inside the pane, reads env from the FIFO itself,
       // then exec()s the real command. No --env-file; the FIFO path (not its
       // contents) is the only trace in the createArgs.
-      const command = environmentPipe
+      const childCommand = environmentPipe
         ? buildCommand("/bin/sh", [BOOTSTRAP_PATH, environmentPipe.pipePath, request.command, ...request.args])
         : buildCommand(request.command, request.args);
-      const workspaceName = `pi-cohort-${randomUUID()}`;
-      const createArgs = [
-        "workspace", "create",
-        "--name", workspaceName,
-        "--cwd", request.cwd,
-        "--focus", "false",
-        "--command", command,
-      ];
+      // cd first: new-pane has no working-directory flag, so keep both create
+      // paths identical rather than trusting the pane's inherited cwd.
+      const command = `cd ${quoteShell(request.cwd)} && ${childCommand}`;
 
-      let createOut;
+      // First child creates the right-side helper pane; later children become
+      // tabs in it. The pane never holds an idle shell surface. cmux collapses
+      // a pane when its last surface closes, so verify before reuse.
+      let helper = state.helperPane;
+      if (helper) {
+        try {
+          await takeSnapshot(execFileFn, cli, parentWorkspace, helper.ref);
+        } catch {
+          helper = null;
+          state.helperPane = null;
+        }
+      }
+      const createArgs = helper
+        ? ["new-surface", "--workspace", parentWorkspace, "--pane", helper.ref, "--type", "terminal", "--focus", "false", "--command", command]
+        : ["new-pane", "--workspace", parentWorkspace, "--type", "terminal", "--direction", "right", "--focus", "false", "--command", command];
+
+      let createRefs;
       try {
         const launch = execFileFn(cli, createArgs, {
           timeout: CLI_DEADLINE_MS,
@@ -416,48 +370,60 @@ export function createCmuxExecutionBackend({
           launch,
           environmentPipe?.writer.completion ?? Promise.resolve(),
         ]);
-        createOut = result.stdout;
+        createRefs = parseCreateRefs(result.stdout);
       } catch (error) {
         await subscription.stop();
         throw error;
       } finally {
         await environmentPipe?.cleanup();
       }
-      const workspaceRef = parseWorkspaceRef(createOut);
+      const paneRef = helper?.ref ?? createRefs.paneRef;
 
       // Snapshot for UUID correlation (spike: three-way UUID correlation).
-      const snapshot = await takeSnapshot(execFileFn, cli, workspaceRef);
-      const snapshotSurface = snapshot.surfaces?.[0];
+      const snapshot = await takeSnapshot(execFileFn, cli, parentWorkspace, paneRef);
+      const snapshotSurface = snapshot.surfaces?.find((s) => s.ref === createRefs.surfaceRef);
+      if (!snapshotSurface) {
+        await subscription.stop();
+        throw new Error(`created surface ${createRefs.surfaceRef} not present in pane snapshot`);
+      }
+      state.helperPane = { ref: snapshot.pane_ref ?? paneRef, id: snapshot.pane_id };
 
       // SPI-conforming handle shape (ExecutionSurfaceHandle).
       const surfaceIdentity = {
-        kind: "pane",
-        id: snapshotSurface?.id ?? snapshot.workspace_id,
+        kind: "surface",
+        id: snapshotSurface.id,
       };
       const handle = {
         protocolVersion: 1,
         backend: "cmux",
         surface: surfaceIdentity,
         display: {
-          label: `cmux:${workspaceRef}`,
-          hint: `cmux:${workspaceRef}`,
+          label: `cmux:${createRefs.surfaceRef}`,
+          hint: `cmux:${snapshot.workspace_ref}/${createRefs.surfaceRef}`,
         },
         data: {
           workspaceId: snapshot.workspace_id,
           workspaceRef: snapshot.workspace_ref,
           paneId: snapshot.pane_id,
           paneRef: snapshot.pane_ref,
-          surfaceId: snapshotSurface?.id ?? null,
-          surfaceRef: snapshotSurface?.ref ?? null,
-          title: snapshotSurface?.title ?? null,
-          type: snapshotSurface?.type ?? null,
+          surfaceId: snapshotSurface.id,
+          surfaceRef: snapshotSurface.ref,
+          title: snapshotSurface.title ?? null,
+          type: snapshotSurface.type ?? null,
           cwd: request.cwd,
         },
       };
 
+      const owned = {
+        surfaceId: snapshotSurface.id,
+        paneId: snapshot.pane_id,
+        workspaceId: snapshot.workspace_id,
+      };
       const eventQueue = createEventQueue();
 
-      // Wire subscription frames to the lease queue.
+      // Wire subscription frames to the lease queue, dropping anything that
+      // does not name this lease's surface/pane/workspace — children share the
+      // parent workspace, so unfiltered frames would attribute foreign events.
       const removeListener = subscription.onFrame((frame, error) => {
         if (error) {
           eventQueue.push({
@@ -467,7 +433,7 @@ export function createCmuxExecutionBackend({
             timestamp: Date.now(),
             surface: handle.surface,
           });
-        } else if (frame) {
+        } else if (frame && ownsFrame(frame, owned)) {
           eventQueue.push(translateCmuxEvent(frame, handle.surface));
         }
       });
@@ -475,7 +441,13 @@ export function createCmuxExecutionBackend({
       // Attach the disposer so release() can call it.
       subscription.removeListener = removeListener;
 
-      return makeLease({ state, handle, request, eventQueue, subscription });
+      return createLease({ handle, request, eventQueue,
+        reconcile: (lost) => {
+          state.reconciles += 1;
+          return [lost ? { ...lost, source: "mux", surface: handle.surface, timestamp: Date.now(), snapshot: true } : { type: "unknown", fact: "snapshot", reason: "mux snapshot", source: "mux", surface: handle.surface, timestamp: Date.now() }];
+        },
+        releaseTransport: async () => { state.releaseCount += 1; subscription.removeListener?.(); await subscription.stop(); },
+      });
     },
 
     // ── reattach ───────────────────────────────────────────────────────────
@@ -489,8 +461,7 @@ export function createCmuxExecutionBackend({
       // Start live observation BEFORE snapshot — mirror the launch ordering so
       // no events are missed between snapshot and first live delivery.
       const subscription = startSubscription(spawnFn, cli, [
-        "workspace.created", "surface.created", "surface.closed",
-        "pane.closed", "workspace.closed",
+        "surface.closed", "pane.closed", "workspace.closed",
       ]);
       state.subscriptions += 1;
 
@@ -503,17 +474,17 @@ export function createCmuxExecutionBackend({
       }
 
       try {
-        const snapshot = await takeSnapshot(execFileFn, cli, workspaceRef);
+        const snapshot = await takeSnapshot(execFileFn, cli, workspaceRef, handle.data?.paneRef);
         const snapshotSurface = handle.data?.surfaceId
           ? snapshot.surfaces?.find((s) => s.id === handle.data.surfaceId)
-          : snapshot.surfaces?.[0];
+          : snapshot.surfaces?.find((s) => s.ref === handle.data?.surfaceRef);
 
         if (!snapshotSurface) {
           await subscription.stop();
           return { status: "gone" };
         }
 
-        const reattachedSurface = { kind: "pane", id: snapshotSurface.id };
+        const reattachedSurface = { kind: "surface", id: snapshotSurface.id };
         const reattachedHandle = {
           ...handle,
           surface: reattachedSurface,
@@ -534,6 +505,11 @@ export function createCmuxExecutionBackend({
           surface: reattachedSurface,
         });
 
+        const owned = {
+          surfaceId: snapshotSurface.id,
+          paneId: snapshot.pane_id,
+          workspaceId: snapshot.workspace_id,
+        };
         // Wire subscription frames AFTER pre-populating the snapshot observation
         // so the snapshot always arrives first in the queue.
         const removeListener = subscription.onFrame((frame, error) => {
@@ -545,13 +521,19 @@ export function createCmuxExecutionBackend({
               timestamp: Date.now(),
               surface: reattachedHandle.surface,
             });
-          } else if (frame) {
+          } else if (frame && ownsFrame(frame, owned)) {
             eventQueue.push(translateCmuxEvent(frame, reattachedHandle.surface));
           }
         });
         subscription.removeListener = removeListener;
 
-        return { status: "present", lease: makeLease({ state, handle: reattachedHandle, request: {}, eventQueue, subscription }) };
+        return { status: "present", lease: createLease({ handle: reattachedHandle, request: {}, eventQueue,
+          reconcile: (lost) => {
+            state.reconciles += 1;
+            return [lost ? { ...lost, source: "mux", surface: reattachedHandle.surface, timestamp: Date.now(), snapshot: true } : { type: "unknown", fact: "snapshot", reason: "mux snapshot", source: "mux", surface: reattachedHandle.surface, timestamp: Date.now() }];
+          },
+          releaseTransport: async () => { state.releaseCount += 1; subscription.removeListener?.(); await subscription.stop(); },
+        }) };
       } catch (error) {
         await subscription.stop();
         if (isNotFound(error)) return { status: "gone" };
@@ -562,16 +544,19 @@ export function createCmuxExecutionBackend({
     // ── close ──────────────────────────────────────────────────────────────
 
     async close(handle, _reason) {
+      const surfaceRef = handle?.data?.surfaceRef;
       const workspaceRef = handle?.data?.workspaceRef;
-      if (!workspaceRef) return; // no-op: nothing to close
+      if (!surfaceRef || !workspaceRef) return; // no-op: nothing to close
 
       try {
-        await execFileFn(cli, ["workspace", "close", workspaceRef], { timeout: CLI_DEADLINE_MS });
-        state.closed.add(handle.surface?.id ?? workspaceRef);
+        // Close only the owned surface; the shared helper pane and parent
+        // workspace belong to the user and other children.
+        await execFileFn(cli, ["close-surface", "--workspace", workspaceRef, "--surface", surfaceRef], { timeout: CLI_DEADLINE_MS });
+        state.closed.add(handle.surface?.id ?? surfaceRef);
       } catch (error) {
         if (isNotFound(error)) {
           // Already gone — idempotent absence, not an error.
-          state.closed.add(handle.surface?.id ?? workspaceRef);
+          state.closed.add(handle.surface?.id ?? surfaceRef);
           return;
         }
         // Transport failure: propagate (strict handle-keyed close).

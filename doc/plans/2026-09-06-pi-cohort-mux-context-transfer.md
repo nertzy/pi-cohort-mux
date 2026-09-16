@@ -8,12 +8,22 @@ This document transfers the current discovery and decisions into the new reposit
 
 ## Current status
 
-- Design discovery is complete enough to start the new repository.
-- No execution-backend implementation has been added to `pi-cohort`.
-- `nertzy/pi-cohort-mux` exists as a **public** GitHub repository; its npm package remains private and unpublished.
-- Draft PR #1 carries the companion prototype; the donor bridge remains the active local integration.
-- The `pi-cohort` design worktree is rebased on `origin/main` at `a2b4908` (`6.0.1`) on branch `mux-execution-backends`, after [gh-11](https://github.com/jjuraszek/pi-cohort/issues/11) removed pi-intercom support outright (`doc/specs/2026-09-06-gh-11-remove-pi-intercom.md`). This design must not reintroduce live parent<->child messaging, foreground detach, or result receipts under a mux-specific name.
-- A context draft with detailed file and line references exists at `doc/specs/2026-09-06-mux-execution-backends.md` in that worktree.
+- Core implementation is on branch `mux-execution-core` in draft [PR #15](https://github.com/jjuraszek/pi-cohort/pull/15); design remains in [PR #12](https://github.com/jjuraszek/pi-cohort/pull/12).
+- Public SPI/registry, deterministic selection, durable session reporting/replay, persistent child host, abort/shutdown control, and foreground routing are implemented. One surface spans model fallback attempts; native execution remains built in.
+- At pushed head `1021b24`, local verification passed 840 unit tests and 424 integration tests with 1 skip. Code/spec reviews passed. Ubuntu CI passed; Windows CI failed and still requires diagnosis. Do not treat local green as cross-platform completion.
+- `nertzy/pi-cohort-mux` is public; its package remains private/unpublished. Draft [PR #1](https://github.com/nertzy/pi-cohort-mux/pull/1) contains research, fixtures, and real-mux spikes, not production adapters. `src/index.js` remains a placeholder; no runnable Pi extension entry point exists yet.
+- The donor bridge remains the active local integration. Do not change `pi-balanced` or claim the new mux is installed.
+- Post-[gh-11](https://github.com/jjuraszek/pi-cohort/issues/11): no live steer, session rebound, foreground detach, generic completion receipts, or `taken_over`. `BLOCKED:` remains an ordinary terminal failed-child result.
+
+### Remaining execution order
+
+- [ ] Diagnose and fix Windows CI on PR #15 before claiming cross-platform readiness.
+- [ ] Task 21: background routing. Extend SPI v1 with an approved serializable reload descriptor so the fresh detached coordinator can import and re-register adapters in the same explicit order. Keep the coordinator detached/native; route only its child attempts. Descriptor implementation has not started. Validate at the boundary and persist no credentials or environment capsule.
+- [ ] Task 22: export the core-owned package-consumable backend conformance testkit.
+- [ ] Task 23: implement production cmux/tmux adapters and Pi extension entry point. Register an explicit `[cmux, tmux]` policy list: higher-level/more opinionated transport first. Core preserves registration order without knowing adapter names; named selection overrides `auto`.
+- [ ] Task 14: create an isolated `pi-balanced-mux` launcher/profile using a separate `PI_CODING_AGENT_DIR`, replacing the donor bridge only in that copy. Preserve `pi-balanced` unchanged. This remains gated on runnable adapters/entry point and foreground/background parity; do not prioritize a foreground-only canary ahead of the existing sequence.
+
+The reload-descriptor SPI change must be documented in both repositories as one logical contract change. Continue from `doc/specs/2026-09-06-mux-execution-backends.md`; earlier proposed phases below describe the overall sequence, not current completion status.
 
 ## Repositories and intended ownership
 
@@ -208,7 +218,7 @@ A conforming adapter supplies surface facts to an integrated core+adapter system
 
 - Extract one backend-neutral child-execution contract in `pi-cohort`.
 - Wrap current native foreground execution without changing behavior.
-- Reuse the contract inside `subagent-runner.ts` while leaving the detached runner intact.
+- Reuse the contract inside `subagent-runner.ts` while leaving the detached runner intact. Carry validated serializable backend reload descriptors into that fresh process so adapter registration is reconstructed before selection; never serialize live backend objects or secrets.
 - Add registry, selection, config, version-negotiation, and failure behavior.
 - Publish a conformance harness that an external adapter can consume.
 - Open an upstream PR focused on the seam and native behavior, not mux implementation.
@@ -228,7 +238,7 @@ A conforming adapter supplies surface facts to an integrated core+adapter system
 
 ### Phase 5: migration and upstream proposal
 
-- Replace the local bridge installation with normal installation of both packages.
+- First create and smoke-test an isolated `pi-balanced-mux` profile/launcher with both packages and no donor bridge. Leave `pi-balanced` unchanged. Replace the normal local bridge installation only after parity is proven and migration is separately approved.
 - Compare behavior against the bridge before removing it.
 - Document retained-pane recovery and explicit cleanup.
 - Draft the transfer/upstream proposal with compatibility and conformance evidence.
@@ -270,6 +280,8 @@ At minimum, verify:
 - native fallback outside supported muxes.
 
 ## Herdr research brief
+
+Herdr adapter implementation is an approved follow-up after the cmux/tmux slice and isolated profile, not part of their completion gate. Herdr 0.9.0 is available for local API verification and runtime probes. Verify its released capabilities before designing the adapter; installation alone does not establish SPI compatibility.
 
 Do not implement from marketing claims. Verify the released Herdr CLI/socket API and version-specific behavior for:
 

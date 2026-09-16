@@ -4,7 +4,10 @@ import { lstat, readFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import test from "node:test";
 
-import { createCmuxBackend } from "../src/cmux-backend.js";
+import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
+
+// launch() derives the parent workspace from the environment; pin it hermetically.
+process.env.CMUX_WORKSPACE_ID ??= "AABBCCDD-0000-0000-0000-111122223333";
 
 const WORKSPACE_REF = "workspace:17";
 const WORKSPACE_ID = "AABBCCDD-0000-0000-0000-111122223333";
@@ -63,11 +66,11 @@ test("hands the requested environment through a child-side bootstrap reading an 
   let launchedOptions;
 
   const execFile = async (_command, args, options) => {
-    if (args[0] === "workspace" && args[1] === "create") {
+    if (args[0] === "new-pane") {
       launchedOptions = options;
 
       // --env-file must NOT appear in createArgs (bootstrap reads the FIFO itself)
-      assert.equal(args.includes("--env-file"), false, "--env-file must not appear in workspace create args");
+      assert.equal(args.includes("--env-file"), false, "--env-file must not appear in new-pane args");
 
       // The bootstrap command is in --command
       const cmdIdx = args.indexOf("--command");
@@ -96,7 +99,7 @@ test("hands the requested environment through a child-side bootstrap reading an 
 
       // Read from the FIFO so the background tee writer can complete
       environmentPayload = await readFile(fifoPipePath, "utf8");
-      return { stdout: `OK ${WORKSPACE_REF}\n`, stderr: "" };
+      return { stdout: `OK surface:1 pane:1 ${WORKSPACE_REF}\n`, stderr: "" };
     }
     if (args[0] === "--id-format") {
       return { stdout: `${JSON.stringify(snapshot())}\n`, stderr: "" };

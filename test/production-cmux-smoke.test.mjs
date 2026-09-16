@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
-import { createCmuxBackend } from "../src/cmux-backend.js";
+import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
 
 const execFile = promisify(execFileCallback);
 

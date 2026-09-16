@@ -6,9 +6,10 @@
  *   cmux --version
  *   cmux capabilities
  *   cmux events --no-heartbeat --name <name> ...
- *   cmux workspace create --name <n> --cwd <d> --focus false --command <cmd>
- *   cmux --id-format both list-pane-surfaces --workspace <ref> --json
- *   cmux workspace close <ref>
+ *   cmux new-pane --workspace <ws> --type terminal --direction right --focus false --command <cmd>
+ *   cmux new-surface --workspace <ws> --pane <ref> --type terminal --focus false --command <cmd>
+ *   cmux --id-format both list-pane-surfaces --workspace <ref> [--pane <ref>] --json
+ *   cmux close-surface --workspace <ws> --surface <ref>
  *
  * Behaviour is configured by environment variables:
  *   FAKE_CMUX_VERSION           (default: "cmux 0.64.22")
@@ -21,6 +22,7 @@
  *   FAKE_CMUX_PANE_REF          ref string (default: "pane:1")
  *   FAKE_CMUX_NOT_FOUND         if "1", list-pane-surfaces and close throw not_found
  *   FAKE_CMUX_CLOSE_NOT_FOUND   if "1", only close throws not_found
+ *   FAKE_CMUX_PANE_GONE         if "1", pane-scoped list-pane-surfaces throws not_found
  *   FAKE_CMUX_EVENTS_FRAMES     path to a JSON file with extra event frames to emit
  *
  * Usage (in a test that adds this directory to PATH):
@@ -46,6 +48,7 @@ const PN_ID = process.env.FAKE_CMUX_PANE_ID ?? randomUUID();
 const PN_REF = process.env.FAKE_CMUX_PANE_REF ?? "pane:1";
 const NOT_FOUND = process.env.FAKE_CMUX_NOT_FOUND === "1";
 const CLOSE_NOT_FOUND = NOT_FOUND || process.env.FAKE_CMUX_CLOSE_NOT_FOUND === "1";
+const PANE_GONE = NOT_FOUND || process.env.FAKE_CMUX_PANE_GONE === "1";
 
 function emit(text) { process.stdout.write(text + "\n"); }
 function fail(message) { process.stderr.write(message + "\n"); process.exit(1); }
@@ -100,44 +103,50 @@ switch (subcommand) {
     break;
   }
 
-  case "workspace": {
-    const action = rest[0];
-    switch (action) {
-      case "create": {
-        // Parse --name, --cwd, --focus, --command flags (order may vary).
-        let name, cwd, focus, command;
-        for (let i = 1; i < rest.length; i++) {
-          if (rest[i] === "--name") { name = rest[++i]; continue; }
-          if (rest[i] === "--cwd") { cwd = rest[++i]; continue; }
-          if (rest[i] === "--focus") { focus = rest[++i]; continue; }
-          if (rest[i] === "--command") { command = rest[++i]; continue; }
-        }
-        if (!name || !cwd || !command) {
-          fail("fake-cmux workspace create: missing required args");
-        }
-        emit(`OK ${WS_REF}`);
-        break;
-      }
-
-      case "close": {
-        const ref = rest[1];
-        if (!ref) fail("fake-cmux workspace close: missing workspace ref");
-        if (CLOSE_NOT_FOUND) {
-          fail(`Error: not_found: Workspace ${ref} not found`);
-        }
-        // Success: no output.
-        break;
-      }
-
-      default:
-        fail(`fake-cmux: unknown workspace subcommand: ${action}`);
+  case "new-pane":
+  case "new-surface": {
+    let pane, workspace, command;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--workspace") { workspace = rest[++i]; continue; }
+      if (rest[i] === "--pane") { pane = rest[++i]; continue; }
+      if (rest[i] === "--command") { command = rest[++i]; continue; }
+      if (rest[i] === "--type" || rest[i] === "--direction" || rest[i] === "--focus") { i++; continue; }
     }
+    if (!workspace || !command) fail(`fake-cmux ${subcommand}: missing required args`);
+    if (subcommand === "new-surface") {
+      if (!pane) fail("fake-cmux new-surface: missing --pane");
+      if (PANE_GONE) fail(`Error: not_found: Pane ${pane} not found`);
+    }
+    emit(`OK ${SF_REF} ${PN_REF} ${WS_REF}`);
     break;
+  }
+
+  case "close-surface": {
+    let surface;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--surface") { surface = rest[++i]; continue; }
+      if (rest[i] === "--workspace") { i++; continue; }
+    }
+    if (!surface) fail("fake-cmux close-surface: missing --surface");
+    if (CLOSE_NOT_FOUND) {
+      fail(`Error: not_found: Surface ${surface} not found`);
+    }
+    // Success: no output.
+    break;
+  }
+
+  case "workspace": {
+    fail("fake-cmux: workspace create/close are no longer used by the adapter");
   }
 
   case "list-pane-surfaces": {
     // --id-format both was already consumed above if present.
-    if (NOT_FOUND) {
+    let paneScoped = false;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--pane") { paneScoped = true; i++; continue; }
+      if (rest[i] === "--workspace" || rest[i] === "--json") { if (rest[i] !== "--json") i++; continue; }
+    }
+    if (NOT_FOUND || (paneScoped && PANE_GONE)) {
       fail("Error: not_found: Pane or workspace not found");
     }
     const snapshot = {
