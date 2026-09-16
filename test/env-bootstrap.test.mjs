@@ -21,7 +21,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 const execFile = promisify(execFileCallback);
-const BOOTSTRAP_PATH = fileURLToPath(new URL("../src/env-bootstrap.sh", import.meta.url));
+const BOOTSTRAP_PATH = fileURLToPath(new URL("../packages/pi-cohort-mux/src/env-bootstrap.sh", import.meta.url));
 
 /**
  * Start a background tee writer: sends payload to fifoPath.
