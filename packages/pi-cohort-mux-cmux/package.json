@@ -1,0 +1,14 @@
+{
+  "name": "pi-cohort-mux-cmux",
+  "version": "0.0.0",
+  "description": "cmux execution adapter for pi-cohort",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.js", "./execution-backend": "./src/cmux-backend.js" },
+  "files": ["src"],
+  "engines": { "node": ">=20" },
+  "license": "MIT",
+  "repository": "github:nertzy/pi-cohort-mux",
+  "dependencies": { "pi-cohort": "^6.1.0", "pi-cohort-mux": "0.0.0" },
+  "pi": { "extensions": ["./src/index.js"] }
+}
