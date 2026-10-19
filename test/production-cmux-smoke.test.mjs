@@ -9,7 +9,9 @@
  *   PI_COHORT_MUX_PRODUCTION_CMUX_SMOKE=1 node --test test/production-cmux-smoke.test.mjs
  *
  * Guard: skipped unless PI_COHORT_MUX_PRODUCTION_CMUX_SMOKE=1 AND cmux available.
- * No existing workspaces/surfaces are altered; only OWN created workspace is closed.
+ * The backend opens the child as a surface inside the CALLER's workspace, so
+ * cleanup closes only that owned surface by ref — never a workspace, which here
+ * is the user's own.
  *
  * Environment sentinel note:
  *   The backend passes environment vars via a child-side bootstrap (env-bootstrap.sh)
@@ -83,19 +85,23 @@ async function pollForFile(filePath, deadline = EVIDENCE_DEADLINE_MS) {
 
 function isNotFound(error) {
   const text = (error?.message ?? "") + (error?.stderr ?? "");
-  return /\bnot_found\b/i.test(text);
+  return /\bnot_found\b|\b(?:workspace|pane|surface) ref not found\b/i.test(text);
 }
 
-/** Poll until list-pane-surfaces confirms the asynchronously closed workspace is absent. */
-async function verifyGone(workspaceRef, deadline = DISAPPEARANCE_DEADLINE_MS) {
+/**
+ * Poll until the owned surface is absent from its pane's snapshot. A closed
+ * last surface collapses the helper pane, so not-found on the pane is absence.
+ */
+async function verifyGone({ workspaceRef, paneRef, surfaceId }, deadline = DISAPPEARANCE_DEADLINE_MS) {
   const end = Date.now() + deadline;
   while (true) {
     try {
-      await execFile(
+      const { stdout } = await execFile(
         "cmux",
-        ["--id-format", "both", "list-pane-surfaces", "--workspace", workspaceRef, "--json"],
+        ["--id-format", "both", "list-pane-surfaces", "--workspace", workspaceRef, "--pane", paneRef, "--json"],
         { timeout: CLI_DEADLINE_MS },
       );
+      if (!JSON.parse(stdout).surfaces?.some((surface) => surface.id === surfaceId)) return true;
     } catch (error) {
       if (isNotFound(error)) return true;
       throw error;
@@ -121,7 +127,7 @@ test(
     let expectedCwd;
     let launchLease;
     let reattachLease;
-    let launchedWorkspaceRef;
+    let ownedSurface;
     let testPassed = false;
     let primaryError;
     const cleanupErrors = [];
@@ -148,7 +154,7 @@ test(
       const evidenceFile = join(tempDir, "evidence.json");
 
       // Synthetic sentinel: random UUID so evidence belongs unambiguously to
-      // THIS specific workspace invocation.
+      // THIS specific surface invocation.
       const sentinel = `smoke-sentinel-${randomUUID()}`;
 
       // ── detect sanity ─────────────────────────────────────────────────────
@@ -158,7 +164,7 @@ test(
       // ── launch with real cmux CLI ─────────────────────────────────────────
       // Pass a non-empty environment so the bootstrap is exercised end-to-end.
       // The sentinel is also passed as an argv arg for command-delivery proof.
-      // The child echoes both back so the test can verify this workspace's
+      // The child echoes both back so the test can verify this surface's
       // command, cwd, and environment injection all worked.
       launchLease = await backend.launch({
         command: process.execPath,
@@ -171,23 +177,25 @@ test(
       });
 
       const handle = launchLease.handle;
-      launchedWorkspaceRef = handle.data.workspaceRef;
+      ownedSurface = { workspaceRef: handle.data.workspaceRef, paneRef: handle.data.paneRef, surfaceRef: handle.data.surfaceRef, surfaceId: handle.surface.id };
       const ownedUUID = handle.surface.id;
 
-      report.workspaceRef = launchedWorkspaceRef;
+      report.workspaceRef = handle.data.workspaceRef;
+      report.surfaceRef = handle.data.surfaceRef;
       report.surfaceUUID = ownedUUID;
-      report.workspaceLabel = handle.display.label;
+      report.surfaceLabel = handle.display.label;
 
       // ── assert handle shape ───────────────────────────────────────────────
       assert.equal(handle.backend, "cmux", "handle.backend is cmux");
       assert.equal(handle.protocolVersion, 1, "handle.protocolVersion is 1");
-      assert.equal(handle.surface.kind, "pane", "handle.surface.kind is pane");
+      assert.equal(handle.surface.kind, "surface", "handle.surface.kind is surface");
       assert.match(
         ownedUUID,
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
         "surface.id is a UUID (from snapshot)",
       );
-      assert.ok(launchedWorkspaceRef, "workspaceRef present in handle.data");
+      assert.equal(handle.data.workspaceId, process.env.CMUX_WORKSPACE_ID, "child surface lives in the caller's workspace");
+      assert.ok(handle.data.paneRef && handle.data.surfaceRef, "paneRef and surfaceRef present in handle.data");
       assert.equal(
         Object.keys(handle.data).sort().join(","),
         "cwd,paneId,paneRef,surfaceId,surfaceRef,title,type,workspaceId,workspaceRef",
@@ -198,7 +206,7 @@ test(
       const evidenceRaw = await pollForFile(evidenceFile, EVIDENCE_DEADLINE_MS);
       const evidence = JSON.parse(evidenceRaw);
 
-      // argv sentinel: proves THIS specific child ran (not another workspace).
+      // argv sentinel: proves THIS specific child ran (not another surface).
       assert.equal(evidence.sentinelEcho, sentinel, "child echoed back the argv sentinel (correct command delivered)");
       assert.equal(evidence.sentinelMatch, true, "argv sentinel equality is true in child");
 
@@ -220,9 +228,9 @@ test(
       launchLease = null;
       report.releaseRetained = true;
 
-      // ── reattach to live workspace ────────────────────────────────────────
+      // ── reattach to live surface ──────────────────────────────────────────
       const reattachResult = await backend.reattach(handle);
-      assert.equal(reattachResult.status, "present", "workspace still present after release (release retains)");
+      assert.equal(reattachResult.status, "present", "surface still present after release (release retains)");
       reattachLease = reattachResult.lease;
       report.reattachStatus = reattachResult.status;
 
@@ -236,19 +244,19 @@ test(
       await reattachLease.release();
       reattachLease = null;
 
-      // ── close ONLY OWN workspace (by handle UUID) ─────────────────────────
+      // ── close ONLY the owned surface (by handle) ──────────────────────────
       await backend.close(handle, "smoke_test_cleanup");
 
-      // ── verify workspace is gone (not_found from list-pane-surfaces) ──────
-      const gone = await verifyGone(launchedWorkspaceRef);
-      assert.equal(gone, true, "workspace is gone after close (not_found from list-pane-surfaces)");
+      // ── verify the surface is gone from its pane ──────────────────────────
+      const gone = await verifyGone(ownedSurface);
+      assert.equal(gone, true, "surface is gone after close");
       report.closedAndGone = gone;
-      launchedWorkspaceRef = undefined; // cleared — prevents double-close in finally
+      ownedSurface = undefined; // cleared — prevents double-close in finally
       testPassed = true;
     } catch (error) {
       primaryError = error;
     } finally {
-      // Unconditional cleanup — ensures no owned workspace leaks on failure.
+      // Unconditional cleanup — ensures no owned surface leaks on failure.
       for (const lease of [launchLease, reattachLease]) {
         if (!lease) continue;
         try {
@@ -257,13 +265,13 @@ test(
           cleanupErrors.push(error);
         }
       }
-      if (launchedWorkspaceRef) {
-        // Workspace was not confirmed gone by the test body. Close the exact
-        // owned ref, then independently wait for authoritative absence.
+      if (ownedSurface) {
+        // Surface was not confirmed gone by the test body. Close the exact
+        // owned surface ref, then independently wait for authoritative absence.
         try {
           await execFile(
             "cmux",
-            ["workspace", "close", launchedWorkspaceRef],
+            ["close-surface", "--workspace", ownedSurface.workspaceRef, "--surface", ownedSurface.surfaceRef],
             { timeout: CLI_DEADLINE_MS },
           );
         } catch (error) {
@@ -271,13 +279,13 @@ test(
         }
 
         try {
-          const gone = await verifyGone(launchedWorkspaceRef);
+          const gone = await verifyGone(ownedSurface);
           if (!gone) {
             throw new Error(
-              `Owned workspace still present ${DISAPPEARANCE_DEADLINE_MS}ms after fallback close: ${launchedWorkspaceRef}`,
+              `Owned surface still present ${DISAPPEARANCE_DEADLINE_MS}ms after fallback close: ${ownedSurface.surfaceRef}`,
             );
           }
-          launchedWorkspaceRef = undefined;
+          ownedSurface = undefined;
         } catch (error) {
           cleanupErrors.push(error);
         }
@@ -292,7 +300,7 @@ test(
 
       report.primaryFailure = primaryError?.message;
       report.cleanupErrors = cleanupErrors.map((error) => error.message);
-      report.ownedWorkspaceCleanedUp = !launchedWorkspaceRef;
+      report.ownedSurfaceCleanedUp = !ownedSurface;
       report.rawExit = testPassed && cleanupErrors.length === 0 ? 0 : 1;
 
       // Write required report to /tmp.
@@ -303,9 +311,10 @@ test(
         `- cli version: ${report.cliVersion}`,
         `- exact path executed: ${report.execPath}`,
         `- available: ${report.available}`,
-        `- workspace ref: ${report.workspaceRef ?? "(not created)"}`,
+        `- caller workspace ref: ${report.workspaceRef ?? "(not launched)"}`,
+        `- surface ref: ${report.surfaceRef ?? "(not created)"}`,
         `- surface UUID: ${report.surfaceUUID ?? "(not created)"}`,
-        `- workspace label: ${report.workspaceLabel ?? "(not created)"}`,
+        `- surface label: ${report.surfaceLabel ?? "(not created)"}`,
         `- argv sentinel match: ${report.evidenceSentinelMatch ?? "(not verified)"}`,
         `- argv sentinel echo: ${report.evidenceSentinelEcho ?? "(not verified)"}`,
         `- child cwd match: ${report.evidenceCwdMatch ?? "(not verified)"}`,
@@ -316,10 +325,10 @@ test(
         `- closed and gone: ${report.closedAndGone ?? false}`,
         `- primary failure: ${report.primaryFailure ?? "none"}`,
         `- cleanup errors: ${report.cleanupErrors.length > 0 ? report.cleanupErrors.join("; ") : "none"}`,
-        `- workspace cleanup evidence: ${
-          report.ownedWorkspaceCleanedUp
-            ? "no owned workspace remains"
-            : "LEAKED — workspace close failed or was bypassed"
+        `- surface cleanup evidence: ${
+          report.ownedSurfaceCleanedUp
+            ? "no owned surface remains"
+            : "LEAKED — surface close failed or was bypassed"
         }`,
         "",
         "## Notes",
@@ -358,6 +367,8 @@ test("production cmux smoke: probe diagnostic — opt-in guard and availability"
   assert.equal(isNotFound(new Error("Error: NOT_FOUND: Pane not found")), true);
   assert.equal(isNotFound(new Error("Error: not_foundation failure")), false);
   assert.equal(isNotFound(new Error("Error: transport failure")), false);
+  assert.equal(isNotFound(Object.assign(new Error("Command failed"), { stderr: "Error: Workspace ref not found: workspace:7" })), true);
+  assert.equal(isNotFound(Object.assign(new Error("Command failed"), { stderr: "Error: Pane ref not found: pane:7" })), true);
 
   if (!optedIn) {
     // Not opted in: skipReason must be a non-empty string.
