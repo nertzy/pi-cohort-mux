@@ -148,9 +148,15 @@ function ownsFrame(frame, owned) {
  *   { ack: Promise, onFrame(listener): disposer, stop(): Promise }
  *
  * ack resolves to the ack frame when cmux acknowledges the subscription.
- * onFrame registers a (frame) -> void listener for subsequent event frames;
- * frames buffered between ack and first listener registration are replayed.
- * stop() kills the subprocess and awaits its exit.
+ * onFrame registers a (frame, error) -> void listener for subsequent event
+ * frames; frames buffered between ack and first listener registration are
+ * replayed, followed by a retained terminal error if the stream already ended.
+ * stop() kills the subprocess and awaits its termination.
+ *
+ * Every termination other than stop() is a failure, whatever its exit code or
+ * signal: a stream that ends on its own has stopped observing the surface.
+ * Termination is settled on "close" (after stdout drains, so no frame trails
+ * the failure) or on a spawn "error", which Node reports without any "exit".
  */
 function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
   const args = ["events", "--no-heartbeat"];
@@ -165,6 +171,8 @@ function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
   });
 
   let exited = false;
+  let stopping = false;
+  let terminalError = null;
   let resolveExit;
   const exitPromise = new Promise((resolve) => { resolveExit = resolve; });
 
@@ -194,16 +202,26 @@ function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
   });
 
   const failure = (error) => {
+    if (terminalError) return;
+    terminalError = error;
     rejectAck(error);
+    // Retained until a listener attaches: launch wires its listener only
+    // after create and snapshot, well after the ack.
     if (frameListener) frameListener(null, error);
   };
-  child.once("error", failure);
-  child.once("exit", (code, signal) => {
+  const terminated = (error) => {
+    if (exited) return;
     exited = true;
     resolveExit();
-    if (code !== 0 && signal !== "SIGTERM") {
-      failure(new Error(`cmux events exited with code ${code}, signal ${signal}`));
-    }
+    if (!stopping) failure(error);
+  };
+  child.on("error", (error) => {
+    // A spawn failure (no pid) never emits "exit"; settle termination here.
+    if (child.pid === undefined) terminated(error);
+    else failure(error);
+  });
+  child.once("close", (code, signal) => {
+    terminated(new Error(`cmux events ended unexpectedly with code ${code}, signal ${signal}`));
   });
 
   const timer = setTimeout(() => rejectAck(new Error("cmux events ack timed out")), deadline);
@@ -216,9 +234,11 @@ function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
     onFrame(listener) {
       frameListener = listener;
       for (const frame of frameBuffer.splice(0)) listener(frame);
+      if (terminalError) listener(null, terminalError);
       return () => { if (frameListener === listener) frameListener = null; };
     },
     async stop() {
+      stopping = true;
       if (!exited) child.kill("SIGTERM");
       await exitPromise;
     },

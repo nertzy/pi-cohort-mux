@@ -28,6 +28,7 @@ class FakeEventsChild extends EventEmitter {
       this.stdout.push(null);
       this.stderr.push(null);
       this.emit("exit", 0, signal);
+      this.emit("close", 0, signal);
     });
   }
 }

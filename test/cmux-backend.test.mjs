@@ -52,6 +52,7 @@ class FakeEventsChild extends EventEmitter {
         this.stdout.push(null);
         this.stderr.push(null);
         this.emit("exit", 0, signal ?? "SIGTERM");
+        this.emit("close", 0, signal ?? "SIGTERM");
       }
     });
   }
@@ -713,6 +714,99 @@ test("launch: breaking out of for-await releases the transport", async () => {
   assert.ok(children[0]._exited, "events subscription process stopped");
 });
 
+// ─── events subscription lifecycle ───────────────────────────────────────────
+
+/**
+ * Events child with a scripted lifecycle, following Node's real event order:
+ *   "spawn-error" – emits error (ENOENT) and close, never exit (missing binary)
+ *   "ack-exit0"   – acks, then exits 0 at once (before launch attaches a listener)
+ *   "ack-sigterm" – acks, then is killed by someone else's SIGTERM
+ */
+class ScriptedEventsChild extends EventEmitter {
+  constructor(script) {
+    super();
+    this.stdout = new Readable({ read() {} });
+    this.stderr = new Readable({ read() {} });
+    this.pid = script === "spawn-error" ? undefined : 4242;
+    this._exited = false;
+    setImmediate(() => {
+      if (script === "spawn-error") {
+        this._exited = true;
+        this.emit("error", Object.assign(new Error("spawn cmux ENOENT"), { code: "ENOENT" }));
+        this.emit("close", -2, null);
+        return;
+      }
+      this.stdout.push(JSON.stringify(FAKE_ACK) + "\n");
+      setImmediate(() => this._end(...(script === "ack-exit0" ? [0, null] : [null, "SIGTERM"])));
+    });
+  }
+
+  _end(code, signal) {
+    if (this._exited) return;
+    this._exited = true;
+    this.stdout.push(null);
+    this.stderr.push(null);
+    this.emit("exit", code, signal);
+    this.emit("close", code, signal);
+  }
+
+  kill(signal) { setImmediate(() => this._end(null, signal)); }
+}
+
+function scriptedIo(script) {
+  const io = makeFakeIo();
+  return { ...io, spawn: () => new ScriptedEventsChild(script) };
+}
+
+function withinDeadline(promise, ms = 2_000) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`still pending after ${ms}ms`)), ms).unref()),
+  ]);
+}
+
+test("launch: missing cmux binary (error + close, no exit) rejects instead of hanging", async () => {
+  const { execFile, spawn, calls } = scriptedIo("spawn-error");
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  await assert.rejects(withinDeadline(backend.launch(makeRequest())), /ENOENT/);
+  assert.equal(calls.some((c) => c.args[0] === "new-pane"), false, "no surface created without an ack");
+});
+
+test("reattach: missing cmux binary returns unknown instead of hanging", async () => {
+  const { execFile, spawn } = scriptedIo("spawn-error");
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  const result = await withinDeadline(backend.reattach({ data: { workspaceRef: FAKE_WS_REF, surfaceId: FAKE_SF_ID } }));
+  assert.equal(result.status, "unknown");
+  assert.match(result.reason, /ENOENT/);
+});
+
+for (const [script, description] of [["ack-exit0", "a clean exit 0"], ["ack-sigterm", "an external SIGTERM"]]) {
+  test(`launch: subscription ending with ${description} before the listener attaches is reported`, async () => {
+    const { execFile, spawn } = scriptedIo(script);
+    const backend = createCmuxBackend({ execFile, spawn });
+    const lease = await backend.launch(makeRequest());
+
+    const { value } = await withinDeadline(lease.events.next());
+    assert.equal(value.type, "backend_disconnected");
+    assert.equal(value.source, "mux");
+    assert.deepEqual(value.surface, lease.handle.surface);
+    assert.match(value.reason, /cmux events/);
+    await lease.release();
+  });
+}
+
+test("launch: intentional release does not report a disconnect", async () => {
+  const { execFile, spawn } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  const lease = await backend.launch(makeRequest());
+
+  await lease.release();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(lease.queuedEvents, [], "our own SIGTERM is not a disconnect");
+});
+
 // ─── launch: cmux events translated to facts ─────────────────────────────────
 
 test("launch: cmux workspace.closed event from subscription becomes surface_closed fact", async () => {
@@ -927,6 +1021,7 @@ test("reattach: subscription exits before ack — returns unknown with non-empty
         this.stdout.push(null);
         this.stderr.push(null);
         this.emit("exit", 1, null);
+        this.emit("close", 1, null);
       });
     }
 
@@ -939,6 +1034,7 @@ test("reattach: subscription exits before ack — returns unknown with non-empty
           this.stdout.push(null);
           this.stderr.push(null);
           this.emit("exit", 0, signal ?? "SIGTERM");
+        this.emit("close", 0, signal ?? "SIGTERM");
         }
       });
     }
