@@ -8,8 +8,8 @@
  * - When the queue holds ≥ 3 facts and a non-coalescing incoming fact arrives,
  *   the incoming fact is saved as the lostAuthoritativeFact and an overflow
  *   marker is appended; the queue suspends further pushes.
- * - Suspension lifts only through the caller invoking resumeFromSuspension()
- *   (after delivering the lost fact via reconcile()).
+ * - Suspension lifts only through the caller invoking resumeFromSuspension(),
+ *   which also hands off the lost fact: reconcile() delivers it exactly once.
  * - finish() releases the async iterator without closing the underlying surface.
  */
 export function createEventQueue(initial = []) {
@@ -54,6 +54,7 @@ export function createEventQueue(initial = []) {
 
   function resumeFromSuspension() {
     suspended = false;
+    lostAuthoritativeFact = undefined;
   }
 
   const events = {

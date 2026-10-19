@@ -35,9 +35,11 @@ export function createLease({ handle, request, eventQueue, reconcile, releaseTra
     request,
     events,
     async reconcile() {
-      const facts = await reconcile(eventQueue.lostAuthoritativeFact);
+      const lost = eventQueue.lostAuthoritativeFact;
+      // Resume before the backend gathers fresh evidence, so nothing observed
+      // while it does is dropped by a still-suspended queue.
       eventQueue.resumeFromSuspension();
-      return facts;
+      return reconcile(lost);
     },
     release,
     push: eventQueue.push,

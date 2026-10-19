@@ -121,7 +121,7 @@ function makeFakeIo({
   const fifoPayloads = [];
   // Mutable across calls so a test can simulate the helper pane collapsing
   // between launches; a successful create makes the pane exist again.
-  const behavior = { paneGone: false, closeNotFound, closeError, createError, fifoUnread, snapshotWithoutSurface };
+  const behavior = { paneGone: false, closeNotFound, closeError, createError, fifoUnread, snapshotWithoutSurface, snapshotNotFound, snapshotError, onSnapshot: null };
 
   async function execFile(cli, args, _opts) {
     calls.push({ type: "exec", args: [...args] });
@@ -152,13 +152,14 @@ function makeFakeIo({
     }
     if (args[0] === "--id-format" && args[1] === "both" && args[2] === "list-pane-surfaces") {
       const paneScoped = args.includes("--pane");
-      if (snapshotNotFound || (paneScoped && behavior.paneGone)) {
+      await behavior.onSnapshot?.();
+      if (behavior.snapshotNotFound || (paneScoped && behavior.paneGone)) {
         const err = Object.assign(new Error("list-pane-surfaces not found"), {
           stderr: "Error: not_found: Pane or workspace not found",
         });
         throw err;
       }
-      if (snapshotError) throw snapshotError;
+      if (behavior.snapshotError) throw behavior.snapshotError;
       const snapshot = fakeSnapshot();
       if (behavior.snapshotWithoutSurface) snapshot.surfaces = [];
       return { stdout: JSON.stringify(snapshot) + "\n", stderr: "" };
@@ -695,14 +696,17 @@ test("launch: overflow suspends queue and reconcile clears suspension with lost 
 
   // reconcile recovers the lost fact and clears suspension
   const reconciled = await lease.reconcile();
-  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled.length, 2, "the lost fact, then fresh cmux evidence");
   assert.equal(reconciled[0].type, "exited");
   assert.equal(reconciled[0].status, 23);
-  assert.equal(reconciled[0].snapshot, true);
+  assert.equal(reconciled[0].snapshot, undefined, "an observed event is not relabeled as snapshot evidence");
   assert.equal(reconciled[0].source, "mux");
   assert.deepEqual(reconciled[0].surface, lease.handle.surface);
   assert.equal(typeof reconciled[0].timestamp, "number");
+  assert.equal(reconciled[1].fact, "snapshot");
+  assert.equal(reconciled[1].snapshot, true);
   assert.equal(lease.suspended, false);
+  assert.deepEqual(await lease.reconcile().then((facts) => facts.map((f) => f.type)), ["unknown"], "the lost fact is delivered once");
 
   // New pushes work after reconcile
   lease.push({ type: "surface_closed", requested: true });
@@ -987,6 +991,103 @@ test("launch: unrecognized cmux event translates to sanitized unknown fact witho
   );
 
   await lease.release();
+});
+
+// ─── reconcile: fresh cmux evidence ───────────────────────────────────────────
+
+function snapshotCalls(calls) {
+  return calls.filter((c) => c.type === "exec" && c.args.includes("list-pane-surfaces")).length;
+}
+
+test("reconcile: queries cmux and reports the surface present", async () => {
+  const { execFile, spawn, calls } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  const lease = await backend.launch(makeRequest());
+  const before = snapshotCalls(calls);
+
+  const facts = await lease.reconcile();
+
+  assert.equal(snapshotCalls(calls), before + 1, "reconcile takes a fresh snapshot");
+  assert.deepEqual(facts.map(({ type, fact, snapshot }) => ({ type, fact, snapshot })), [{ type: "unknown", fact: "snapshot", snapshot: true }]);
+  assert.match(facts[0].reason, /present/);
+  await lease.release();
+});
+
+for (const [setup, description] of [
+  [(b) => { b.snapshotWithoutSurface = true; }, "missing from a fresh snapshot"],
+  [(b) => { b.snapshotNotFound = true; }, "in a pane or workspace cmux no longer finds"],
+]) {
+  test(`reconcile: a surface ${description} is reported closed`, async () => {
+    const { execFile, spawn, behavior } = makeFakeIo();
+    const backend = createCmuxBackend({ execFile, spawn });
+    const lease = await backend.launch(makeRequest());
+    setup(behavior);
+
+    const facts = await lease.reconcile();
+
+    assert.deepEqual(facts.map(({ type, requested, snapshot }) => ({ type, requested, snapshot })), [{ type: "surface_closed", requested: false, snapshot: true }]);
+    assert.deepEqual(facts[0].surface, lease.handle.surface);
+    await lease.release();
+  });
+}
+
+test("reconcile: a failed snapshot reports recovery unavailable, not cached state", async () => {
+  const { execFile, spawn, behavior } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  const lease = await backend.launch(makeRequest());
+  behavior.snapshotError = new Error("socket timeout");
+
+  const facts = await lease.reconcile();
+
+  assert.equal(facts.length, 1);
+  assert.equal(facts[0].type, "unknown");
+  assert.equal(facts[0].snapshot, undefined);
+  assert.match(facts[0].reason, /unavailable.*socket timeout/);
+  await lease.release();
+});
+
+test("reconcile: an ended event stream is reported as not restored", async () => {
+  const { execFile, spawn } = scriptedIo("ack-exit0");
+  const backend = createCmuxBackend({ execFile, spawn });
+  const lease = await backend.launch(makeRequest());
+
+  const facts = await lease.reconcile();
+
+  const disconnected = facts.find((f) => f.type === "backend_disconnected");
+  assert.ok(disconnected, "reconcile says live observation is gone");
+  assert.match(disconnected.reason, /not restored/);
+  await lease.release();
+});
+
+test("reconcile: the queue resumes before the snapshot, so events during it are kept", async () => {
+  const { execFile, spawn, behavior } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  const lease = await backend.launch(makeRequest());
+  for (const sinceMs of [1, 2]) lease.push({ type: "no_observed_activity", sinceMs });
+  lease.push({ type: "surface_closed", requested: false });
+  lease.push({ type: "exited", status: 0, signal: null }); // overflows
+  for (let i = 0; i < 4; i += 1) await lease.events.next();
+  behavior.onSnapshot = () => lease.push({ type: "surface_closed", requested: true, marker: "during-snapshot" });
+
+  await lease.reconcile();
+
+  assert.equal((await lease.events.next()).value.marker, "during-snapshot");
+  await lease.release();
+});
+
+test("reconcile: a reattached lease also queries cmux", async () => {
+  const { execFile, spawn, calls, behavior } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  const result = await backend.reattach({ data: { workspaceRef: FAKE_WS_REF, paneRef: FAKE_PN_REF, surfaceId: FAKE_SF_ID } });
+  assert.equal(result.status, "present");
+  behavior.snapshotWithoutSurface = true;
+  const before = snapshotCalls(calls);
+
+  const facts = await result.lease.reconcile();
+
+  assert.equal(snapshotCalls(calls), before + 1);
+  assert.equal(facts.at(-1).type, "surface_closed");
+  await result.lease.release();
 });
 
 // ─── reattach ─────────────────────────────────────────────────────────────────

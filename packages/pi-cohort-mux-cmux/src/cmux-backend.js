@@ -238,6 +238,8 @@ function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
       if (terminalError) listener(null, terminalError);
       return () => { if (frameListener === listener) frameListener = null; };
     },
+    /** True once the stream has ended on its own; observation is gone. */
+    get ended() { return terminalError !== null; },
     async stop() {
       stopping = true;
       if (!exited) child.kill("SIGTERM");
@@ -350,6 +352,31 @@ export function createCmuxExecutionBackend({
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  /**
+   * Reconcile a lease from fresh, identity-keyed cmux evidence: the overflowed
+   * fact as it was observed, then what a new snapshot shows now, then whether
+   * live observation still runs. Nothing cached is presented as current.
+   */
+  async function reconcileSurface({ lost, surface, workspaceRef, paneRef, surfaceId, subscription }) {
+    state.reconciles += 1;
+    const fact = (body) => ({ ...body, source: "mux", surface, timestamp: Date.now() });
+    const facts = lost ? [{ ...lost, source: "mux", surface, timestamp: lost.timestamp ?? Date.now() }] : [];
+    try {
+      const snapshot = await takeSnapshot(execFileFn, cli, workspaceRef, paneRef);
+      facts.push(snapshot.surfaces?.some((s) => s.id === surfaceId)
+        ? fact({ type: "unknown", fact: "snapshot", reason: "surface present in a fresh cmux snapshot", snapshot: true })
+        : fact({ type: "surface_closed", requested: false, snapshot: true }));
+    } catch (error) {
+      facts.push(isNotFound(error)
+        ? fact({ type: "surface_closed", requested: false, snapshot: true })
+        : fact({ type: "unknown", fact: "snapshot", reason: `cmux snapshot unavailable: ${error.message}` }));
+    }
+    if (subscription.ended) {
+      facts.push(fact({ type: "backend_disconnected", reason: "cmux events stream ended; live observation is not restored" }));
+    }
+    return facts;
   }
 
   /** Close a surface this launch created but never handed out. */
@@ -530,10 +557,14 @@ export function createCmuxExecutionBackend({
       subscription.removeListener = removeListener;
 
       return createLease({ handle, request, eventQueue,
-        reconcile: (lost) => {
-          state.reconciles += 1;
-          return [lost ? { ...lost, source: "mux", surface: handle.surface, timestamp: Date.now(), snapshot: true } : { type: "unknown", fact: "snapshot", reason: "mux snapshot", source: "mux", surface: handle.surface, timestamp: Date.now() }];
-        },
+        reconcile: (lost) => reconcileSurface({
+          lost,
+          surface: handle.surface,
+          workspaceRef: snapshot.workspace_ref ?? parentWorkspace,
+          paneRef: snapshot.pane_ref ?? createRefs.paneRef,
+          surfaceId: snapshotSurface.id,
+          subscription,
+        }),
         releaseTransport: async () => { state.releaseCount += 1; subscription.removeListener?.(); await subscription.stop(); },
       });
     },
@@ -616,10 +647,14 @@ export function createCmuxExecutionBackend({
         subscription.removeListener = removeListener;
 
         return { status: "present", lease: createLease({ handle: reattachedHandle, request: {}, eventQueue,
-          reconcile: (lost) => {
-            state.reconciles += 1;
-            return [lost ? { ...lost, source: "mux", surface: reattachedHandle.surface, timestamp: Date.now(), snapshot: true } : { type: "unknown", fact: "snapshot", reason: "mux snapshot", source: "mux", surface: reattachedHandle.surface, timestamp: Date.now() }];
-          },
+          reconcile: (lost) => reconcileSurface({
+            lost,
+            surface: reattachedHandle.surface,
+            workspaceRef,
+            paneRef: handle.data?.paneRef ?? snapshot.pane_ref,
+            surfaceId: snapshotSurface.id,
+            subscription,
+          }),
           releaseTransport: async () => { state.releaseCount += 1; subscription.removeListener?.(); await subscription.stop(); },
         }) };
       } catch (error) {
