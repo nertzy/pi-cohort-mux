@@ -13,7 +13,7 @@
  */
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawn as spawnProcess } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -137,6 +137,23 @@ test("env-bootstrap: empty FIFO path skips injection and execs the command direc
     "process.exit(0)",
   ]);
   assert.equal(exitCode, 0, "bootstrap should exec command without injection when FIFO path is empty");
+});
+
+test("env-bootstrap: a missing FIFO fails closed instead of running the command without its environment", async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), "env-bootstrap-test-"));
+  const ran = join(tmpDir, "ran");
+  try {
+    const exitCode = await runBootstrap([
+      join(tmpDir, "removed.fifo"),
+      process.execPath,
+      "-e",
+      `require("node:fs").writeFileSync(${JSON.stringify(ran)}, "")`,
+    ]);
+    assert.notEqual(exitCode, 0);
+    await assert.rejects(stat(ran), { code: "ENOENT" }, "command must not run");
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("env-bootstrap: values with spaces are preserved", async () => {

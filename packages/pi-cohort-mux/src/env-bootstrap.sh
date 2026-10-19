@@ -7,7 +7,8 @@
 # shell's built-in 'export NAME=VALUE', so no secret ever enters process argv.
 #
 # Algorithm:
-#   1. Accumulate KEY=VALUE lines as positional params (prepended before cmd).
+#   1. Open the FIFO (exit 70 if it cannot be opened), then accumulate
+#      KEY=VALUE lines as positional params (prepended before cmd).
 #   2. Insert an empty-string delimiter between env entries and command args.
 #   3. Unset all bootstrap scratch variables before touching the environment
 #      (prevents the bootstrap's own names from leaking or masking user values).
@@ -25,10 +26,15 @@ if [ -n "$_bs_fifo" ]; then
   # After the read loop: $@ = KEY1=V1 KEY2=V2 ... "" CMD arg1 arg2 ...
   set -- "" "$@"
 
-  while IFS= read -r _bs_line; do
+  # Fail closed: a redirection error on a loop is not fatal in sh, so a
+  # missing FIFO would otherwise run the command without its environment.
+  # exec is a special built-in; failing to open the FIFO ends the shell.
+  exec 3< "$_bs_fifo" || exit 70
+  while IFS= read -r _bs_line <&3; do
     case "$_bs_line" in '') continue;; esac
     set -- "$_bs_line" "$@"
-  done < "$_bs_fifo"
+  done
+  exec 3<&-
 
   # Unset bootstrap scratch variables before modifying the environment.
   # This prevents the bootstrap's own names from persisting into the child
