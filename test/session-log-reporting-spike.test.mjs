@@ -21,6 +21,11 @@ function runtimeSkipReason(runtime = { pi, piAi, tmux }) {
   return missing && `${missing} for the real Pi TUI runtime proof`;
 }
 
+/** Single-quote a token for POSIX sh source. */
+function quoteShell(token) {
+  return `'${String(token).replaceAll("'", "'\\''")}'`;
+}
+
 function command(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
@@ -78,7 +83,8 @@ test("Pi TUI session log reports readiness, settlement, and shutdown without net
     return;
   }
 
-  const directory = await mkdtemp(path.join(os.tmpdir(), "pi-cohort-session-log-"));
+  // A space in the directory proves every path reaches the runner shell quoted.
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pi-cohort session-log-"));
   const session = path.join(directory, "session.jsonl");
   const socket = path.join(directory, "control.sock");
   const fifo = path.join(directory, "token.fifo");
@@ -118,7 +124,9 @@ test("Pi TUI session log reports readiness, settlement, and shutdown without net
     assert.equal((await stat(fifo)).mode & 0o777, 0o600);
     assert.equal((await stat(socket)).mode & 0o777, 0o600);
 
-    await writeFile(runner, `#!/bin/sh\n${pi.executable} --no-extensions --extension ${fileURLToPath(extension)} --session ${session} --model fixture/fixed\nstatus=$?\ntmux -L ${serverName} wait-for -S ${completionEvent}\nexit $status\n`, { mode: 0o700 });
+    const piCommand = [pi.executable, "--no-extensions", "--extension", fileURLToPath(extension), "--session", session, "--model", "fixture/fixed"].map(quoteShell).join(" ");
+    const signalCompletion = ["tmux", "-L", serverName, "wait-for", "-S", completionEvent].map(quoteShell).join(" ");
+    await writeFile(runner, `#!/bin/sh\n${piCommand}\nstatus=$?\n${signalCompletion}\nexit $status\n`, { mode: 0o700 });
     await command("tmux", ["-L", serverName, "new-session", "-d", "-s", serverName, "/bin/sh", runner], {
       cwd: directory,
       env: { ...process.env, PI_COHORT_SPIKE_SOCKET: socket, PI_COHORT_SPIKE_FIFO: fifo, PI_COHORT_SPIKE_PI_AI_MODULE: piAi.url },
