@@ -21,10 +21,12 @@ Do not import private `src/...` paths from dependencies. The public
 
 ## Changes
 
-Write tests first for behavior changes, then run:
+Write tests first for behavior changes, then run lint and the tests:
 
 ```sh
-npm test
+npm run check
 ```
+
+`npm run lint:fix` applies Biome and markdownlint fixes.
 
 The package is private. Do not publish it.

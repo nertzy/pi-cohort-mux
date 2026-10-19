@@ -26,7 +26,7 @@ npm ci
 ## Development
 
 ```sh
-npm test
+npm run check
 ```
 
 ## Related projects
