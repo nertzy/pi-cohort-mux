@@ -853,6 +853,20 @@ test("reattach: gone — list-pane-surfaces not_found maps to status=gone", asyn
   assert.deepEqual(result, { status: "gone" });
 });
 
+// cmux 0.65 reports a closed workspace addressed by ref without the
+// not_found token: "Error: Workspace ref not found: workspace:N".
+const staleWorkspaceRef = () => Object.assign(new Error("Command failed"), {
+  stderr: `Error: Workspace ref not found: ${FAKE_WS_REF}\n`,
+});
+
+test("reattach: gone — cmux 0.65 'Workspace ref not found' maps to status=gone", async () => {
+  const { execFile, spawn } = makeFakeIo({ snapshotError: staleWorkspaceRef() });
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  const result = await backend.reattach({ data: { workspaceRef: FAKE_WS_REF, surfaceId: FAKE_SF_ID } });
+  assert.deepEqual(result, { status: "gone" });
+});
+
 test("reattach: unknown — generic CLI error yields status=unknown with reason", async () => {
   const err = new Error("connection refused");
   const { execFile, spawn } = makeFakeIo({ snapshotError: err });
@@ -972,6 +986,14 @@ test("close: can be called twice idempotently when CLI always returns not_found"
   await backend.close(handle, "explicit_cleanup");
   await backend.close(handle, "explicit_cleanup");
   // no error means idempotent
+});
+
+test("close: cmux 0.65 'Workspace ref not found' is idempotent absence", async () => {
+  const { execFile, spawn } = makeFakeIo({ closeError: staleWorkspaceRef() });
+  const backend = createCmuxBackend({ execFile, spawn });
+  const handle = { surface: { kind: "surface", id: FAKE_SF_ID }, data: { workspaceRef: FAKE_WS_REF, surfaceRef: FAKE_SF_REF } };
+
+  await assert.doesNotReject(backend.close(handle, "explicit_cleanup"));
 });
 
 test("close: non-not_found CLI errors propagate (strict handle-keyed close)", async () => {

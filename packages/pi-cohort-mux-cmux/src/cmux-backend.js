@@ -17,8 +17,8 @@
  *   - Handle UUID comes from the snapshot (list-pane-surfaces --id-format both).
  *   - Only frames that name the owned surface/pane/workspace reach the lease;
  *     children share the parent workspace, so unfiltered events are unsafe.
- *   - close() maps only "not_found" to idempotent absence; other errors propagate.
- *   - reattach() maps "not_found" to { status: "gone" }; other errors to "unknown".
+ *   - close() maps only not-found errors to idempotent absence; other errors propagate.
+ *   - reattach() maps not-found errors to { status: "gone" }; other errors to "unknown".
  *   - release() stops the subscription without closing the surface.
  *   - No screen scraping, send-keys, focus stealing, or intercom env vars.
  *   - Inherited CMUX_* env vars are scrubbed from the child environment so the
@@ -73,13 +73,14 @@ function buildCommand(command, args) {
 // ─── Error classification ─────────────────────────────────────────────────────
 
 /**
- * Returns true only for "not_found" CLI errors (workspace/surface gone).
- * Matches the exact cmux error token to reduce false positives.
+ * Returns true only for CLI errors that mean the workspace/surface is gone:
+ * the "not_found" token, or cmux 0.65's "<Kind> ref not found: <ref>" for a
+ * stale ref. Matches exact wording to reduce false positives.
  * All other errors are transport failures and must propagate.
  */
 function isNotFound(error) {
   const text = (error?.message ?? "") + (error?.stderr ?? "");
-  return /\bnot_found\b/i.test(text);
+  return /\bnot_found\b|\b(?:workspace|pane|surface) ref not found\b/i.test(text);
 }
 
 // ─── Environment scrubbing ──────────────────────────────────────────────────
