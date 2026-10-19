@@ -169,10 +169,27 @@ async function startReporter(directory) {
   };
 }
 
+// cmux 0.65 can print "OK workspace:N" before that ref resolves; wait until
+// a snapshot succeeds so later steps never race workspace registration.
 async function createWorkspace({ name, cwd, command }) {
   const { stdout } = await cmux("workspace", "create", "--name", name, "--cwd", cwd, "--focus", "false", "--command", command);
   assert.match(stdout.trim(), /^OK workspace:\d+$/);
-  return stdout.trim().split(" ")[1];
+  const workspaceRef = stdout.trim().split(" ")[1];
+  const end = Date.now() + cliDeadline;
+  while (true) {
+    try {
+      await snapshot(workspaceRef);
+      return workspaceRef;
+    } catch (error) {
+      if (Date.now() >= end || !isGone(error)) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, disappearancePoll));
+  }
+}
+
+function isGone(error) {
+  const text = (error?.message ?? "") + (error?.stderr ?? "");
+  return /\bnot_found\b|\bworkspace ref not found\b/i.test(text);
 }
 
 async function snapshot(workspaceRef) {
@@ -186,8 +203,7 @@ async function waitUntilSnapshotGone(workspaceRef) {
     try {
       await snapshot(workspaceRef);
     } catch (error) {
-      const text = (error?.message ?? "") + (error?.stderr ?? "");
-      if (/\bnot_found\b/i.test(text)) return;
+      if (isGone(error)) return;
       throw error;
     }
     if (Date.now() >= end) {
