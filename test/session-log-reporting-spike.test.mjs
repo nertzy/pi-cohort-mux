@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createWriteStream, existsSync } from "node:fs";
 import {
   chmod,
   mkdtemp,
-  readFile,
   readdir,
+  readFile,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
-import { createWriteStream, existsSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 

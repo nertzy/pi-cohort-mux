@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { piModule, resolvePi } from "./support/pi-runtime.mjs";
 

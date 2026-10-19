@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { fileURLToPath } from "node:url";
 import test, { beforeEach } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { resolvePi } from "./support/pi-runtime.mjs";
 

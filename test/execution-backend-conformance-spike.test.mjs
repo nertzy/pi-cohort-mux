@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import test from "node:test";
 import { createConformanceBackend } from "./fixtures/execution-backend/contract.mjs";
 import { registerExecutionBackendConformance } from "./fixtures/execution-backend/testkit.mjs";

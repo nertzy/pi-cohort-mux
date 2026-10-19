@@ -72,7 +72,7 @@ const LAUNCHER_PATH = fileURLToPath(
 
 /** Single-quote-escape a shell token (POSIX). */
 function quoteShell(token) {
-  return "'" + String(token).replaceAll("'", "'\"'\"'") + "'";
+  return `'${String(token).replaceAll("'", "'\"'\"'")}'`;
 }
 
 /**
@@ -180,12 +180,6 @@ function parseCreateRefs(output) {
   };
 }
 
-/** Parse "OK pane:M" from list/create output that carries no surface. */
-function parsePaneRef(output) {
-  const match = output.trim().match(/(?:^|\s)(pane:\d+)(?:\s|$)/);
-  return match?.[1] ?? null;
-}
-
 // ─── Owned-surface close ─────────────────────────────────────────────────────
 
 /**
@@ -279,8 +273,11 @@ function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
     buffer += chunk;
-    let newline;
-    while ((newline = buffer.indexOf("\n")) >= 0) {
+    for (
+      let newline = buffer.indexOf("\n");
+      newline >= 0;
+      newline = buffer.indexOf("\n")
+    ) {
       const line = buffer.slice(0, newline);
       buffer = buffer.slice(newline + 1);
       if (!line) continue;

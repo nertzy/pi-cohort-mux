@@ -15,9 +15,9 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import test from "node:test";
 
 const execFile = promisify(execFileCallback);
 const LAUNCHER = fileURLToPath(

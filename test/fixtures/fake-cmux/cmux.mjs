@@ -54,19 +54,16 @@ const CLOSE_NOT_FOUND =
 const PANE_GONE = NOT_FOUND || process.env.FAKE_CMUX_PANE_GONE === "1";
 
 function emit(text) {
-  process.stdout.write(text + "\n");
+  process.stdout.write(`${text}\n`);
 }
 function fail(message) {
-  process.stderr.write(message + "\n");
+  process.stderr.write(`${message}\n`);
   process.exit(1);
 }
 
 // Strip leading global flags like --id-format both before subcommand dispatch.
 let cursor = 0;
-let idFormat = "short";
-
 if (args[cursor] === "--id-format") {
-  idFormat = args[cursor + 1] ?? "short";
   cursor += 2;
 }
 
@@ -135,7 +132,6 @@ switch (subcommand) {
         rest[i] === "--focus"
       ) {
         i++;
-        continue;
       }
     }
     if (!workspace || !command)
@@ -157,7 +153,6 @@ switch (subcommand) {
       }
       if (rest[i] === "--workspace") {
         i++;
-        continue;
       }
     }
     if (!surface) fail("fake-cmux close-surface: missing --surface");
@@ -170,6 +165,7 @@ switch (subcommand) {
 
   case "workspace": {
     fail("fake-cmux: workspace create/close are no longer used by the adapter");
+    break;
   }
 
   case "list-pane-surfaces": {
@@ -183,7 +179,6 @@ switch (subcommand) {
       }
       if (rest[i] === "--workspace" || rest[i] === "--json") {
         if (rest[i] !== "--json") i++;
-        continue;
       }
     }
     if (NOT_FOUND || (paneScoped && PANE_GONE)) {

@@ -46,9 +46,9 @@ class FakeEventsChild extends EventEmitter {
     // attached first in the current synchronous setup phase.
     setImmediate(() => {
       if (this._killed) return;
-      this.stdout.push(JSON.stringify(ackFrame) + "\n");
+      this.stdout.push(`${JSON.stringify(ackFrame)}\n`);
       for (const frame of extraFrames) {
-        this.stdout.push(JSON.stringify(frame) + "\n");
+        this.stdout.push(`${JSON.stringify(frame)}\n`);
       }
     });
   }
@@ -154,14 +154,14 @@ function makeFakeIo({
     onCreate: null,
   };
 
-  async function execFile(cli, args, _opts) {
+  async function execFile(_cli, args, _opts) {
     calls.push({ type: "exec", args: [...args] });
 
     if (args[0] === "--version") {
-      return { stdout: version + "\n", stderr: "" };
+      return { stdout: `${version}\n`, stderr: "" };
     }
     if (args[0] === "capabilities") {
-      return { stdout: JSON.stringify({ capabilities }) + "\n", stderr: "" };
+      return { stdout: `${JSON.stringify({ capabilities })}\n`, stderr: "" };
     }
     if (args[0] === "new-pane" || args[0] === "new-surface") {
       if (args[0] === "new-surface" && behavior.paneGone) {
@@ -203,7 +203,7 @@ function makeFakeIo({
       if (behavior.snapshotError) throw behavior.snapshotError;
       const snapshot = fakeSnapshot();
       if (behavior.snapshotWithoutSurface) snapshot.surfaces = [];
-      return { stdout: JSON.stringify(snapshot) + "\n", stderr: "" };
+      return { stdout: `${JSON.stringify(snapshot)}\n`, stderr: "" };
     }
     if (args[0] === "close-surface") {
       // cmux 0.65 refuses to close a surface whose process is still running.
@@ -226,7 +226,7 @@ function makeFakeIo({
   }
 
   const children = [];
-  function spawn(cli, args, _opts) {
+  function spawn(_cli, args, _opts) {
     calls.push({ type: "spawn", args: [...args] });
     const child = new FakeEventsChild(FAKE_ACK, eventsFrames);
     children.push(child);
@@ -1390,7 +1390,7 @@ class ScriptedEventsChild extends EventEmitter {
         this.emit("close", -2, null);
         return;
       }
-      this.stdout.push(JSON.stringify(FAKE_ACK) + "\n");
+      this.stdout.push(`${JSON.stringify(FAKE_ACK)}\n`);
       setImmediate(() =>
         this._end(...(script === "ack-exit0" ? [0, null] : [null, "SIGTERM"])),
       );

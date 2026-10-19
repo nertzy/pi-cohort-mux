@@ -1,5 +1,5 @@
-import { readdir, stat } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
+import { readdir, stat } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";

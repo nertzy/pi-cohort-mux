@@ -19,9 +19,9 @@ import {
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import test from "node:test";
 
 const execFile = promisify(execFileCallback);
 const BOOTSTRAP_PATH = fileURLToPath(
@@ -319,17 +319,16 @@ test("env-bootstrap: never invokes env(1) with KEY=VALUE argv (process-level pro
 
     // Canary env: write sentinel and exit 1 if called with any KEY=VALUE arg.
     // If never invoked with assignment argv, the sentinel is never created.
-    const fakeEnvScript =
-      [
-        "#!/bin/sh",
-        `SENTINEL='${sentinelPath}'`,
-        "for arg; do",
-        '  case "$arg" in',
-        '    [A-Za-z_]*=*) touch "$SENTINEL"; exit 1;;',
-        "  esac",
-        "done",
-        '/usr/bin/env "$@"',
-      ].join("\n") + "\n";
+    const fakeEnvScript = `${[
+      "#!/bin/sh",
+      `SENTINEL='${sentinelPath}'`,
+      "for arg; do",
+      '  case "$arg" in',
+      '    [A-Za-z_]*=*) touch "$SENTINEL"; exit 1;;',
+      "  esac",
+      "done",
+      '/usr/bin/env "$@"',
+    ].join("\n")}\n`;
     await writeFile(fakeEnvPath, fakeEnvScript, { mode: 0o755 });
 
     writer = writeFifo(fifoPath, "SECRET_KEY=secret-value\n");

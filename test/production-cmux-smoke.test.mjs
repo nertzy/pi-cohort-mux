@@ -25,13 +25,13 @@
  */
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import test from "node:test";
 
 import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
 
@@ -366,6 +366,7 @@ test("production cmux backend: launch → evidence → release-retains → reatt
       try {
         const gone = await verifyGone(ownedSurface);
         if (!gone) {
+          // biome-ignore lint/correctness/noUnsafeFinally: caught just below and recorded as a cleanup error
           throw new Error(
             `Owned surface still present ${DISAPPEARANCE_DEADLINE_MS}ms after fallback close: ${ownedSurface.surfaceRef}`,
           );
@@ -424,7 +425,7 @@ test("production cmux backend: launch → evidence → release-retains → reatt
     try {
       await writeFile(
         "/tmp/pi-cohort-mux-production-cmux-smoke.md",
-        reportLines.join("\n") + "\n",
+        `${reportLines.join("\n")}\n`,
         "utf8",
       );
     } catch (error) {

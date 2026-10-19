@@ -4,8 +4,8 @@ import { chmod, mkdtemp, realpath, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import test from "node:test";
+import { promisify } from "node:util";
 import { firstPaneDeath } from "./support/tmux-pane-exit.mjs";
 
 const execFile = promisify(execFileCallback);

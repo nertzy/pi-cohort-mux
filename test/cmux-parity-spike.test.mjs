@@ -4,8 +4,8 @@ import { chmod, mkdtemp, realpath, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import test from "node:test";
+import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
 const cliDeadline = 5_000;
@@ -17,7 +17,7 @@ function cmux(...args) {
 }
 
 function quoteShell(token) {
-  return "'" + String(token).replaceAll("'", "'\"'\"'") + "'";
+  return `'${String(token).replaceAll("'", "'\"'\"'")}'`;
 }
 
 function withDeadline(promise, message, deadline = cliDeadline) {
@@ -71,8 +71,11 @@ function subscribe(names) {
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
     buffer += chunk;
-    let newline;
-    while ((newline = buffer.indexOf("\n")) >= 0) {
+    for (
+      let newline = buffer.indexOf("\n");
+      newline >= 0;
+      newline = buffer.indexOf("\n")
+    ) {
       const line = buffer.slice(0, newline);
       buffer = buffer.slice(newline + 1);
       if (!line) continue;
@@ -155,8 +158,11 @@ async function startReporter(directory) {
     });
     client.on("data", (chunk) => {
       buffer += chunk;
-      let newline;
-      while ((newline = buffer.indexOf("\n")) >= 0) {
+      for (
+        let newline = buffer.indexOf("\n");
+        newline >= 0;
+        newline = buffer.indexOf("\n")
+      ) {
         const line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
         if (!line) continue;
@@ -464,6 +470,7 @@ test("real public cmux backend proves workspace/surface lifecycle parity end to 
     await rm(directory, { recursive: true, force: true });
     for (const leak of leaks) t.diagnostic(`cleanup: ${leak.message}`);
     if (leaks.length && !failure)
+      // biome-ignore lint/correctness/noUnsafeFinally: a leak fails a run that otherwise passed; a real failure keeps its own error
       throw new AggregateError(leaks, "owned cmux workspaces leaked");
   }
 });

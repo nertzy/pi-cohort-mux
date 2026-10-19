@@ -38,11 +38,11 @@ class FakeEventsChild extends EventEmitter {
     setImmediate(() => {
       if (!this._killed) {
         this.stdout.push(
-          JSON.stringify({
+          `${JSON.stringify({
             type: "ack",
             subscription_id: "conf-sub",
             version: 1,
-          }) + "\n",
+          })}\n`,
         );
       }
     });
@@ -110,7 +110,7 @@ function makeStatefulFakeIo() {
     }
     if (args[0] === "capabilities") {
       return {
-        stdout: JSON.stringify({ capabilities: ["events.v1"] }) + "\n",
+        stdout: `${JSON.stringify({ capabilities: ["events.v1"] })}\n`,
         stderr: "",
       };
     }
@@ -162,10 +162,9 @@ function makeStatefulFakeIo() {
     ) {
       const paneIdx = args.indexOf("--pane");
       return {
-        stdout:
-          JSON.stringify(
-            snapshotFor(paneIdx === -1 ? null : args[paneIdx + 1]),
-          ) + "\n",
+        stdout: `${JSON.stringify(
+          snapshotFor(paneIdx === -1 ? null : args[paneIdx + 1]),
+        )}\n`,
         stderr: "",
       };
     }
