@@ -165,12 +165,15 @@ function makeFakeIo({
     throw new Error(`Unhandled fake cmux exec: ${args.join(" ")}`);
   }
 
+  const children = [];
   function spawn(cli, args, _opts) {
     calls.push({ type: "spawn", args: [...args] });
-    return new FakeEventsChild(FAKE_ACK, eventsFrames);
+    const child = new FakeEventsChild(FAKE_ACK, eventsFrames);
+    children.push(child);
+    return child;
   }
 
-  return { execFile, spawn, calls, behavior, fifoPayloads };
+  return { execFile, spawn, calls, behavior, fifoPayloads, children };
 }
 
 function makeRequest(overrides = {}) {
@@ -682,17 +685,32 @@ test("launch: release stops subscription without closing the surface", async () 
 });
 
 test("launch: iterator return also stops subscription without closing surface", async () => {
-  const { execFile, spawn } = makeFakeIo();
+  const { execFile, spawn, children } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest());
 
   const pending = lease.events.next();
   await lease.events.return();
   assert.deepEqual(await pending, { done: true });
-  await lease.release();
+
+  // No explicit release(): breaking out of `for await` must stop transport.
+  assert.equal(backend.state.releaseCount, 1);
+  assert.ok(children[0]._exited, "events subscription process stopped");
+  assert.equal(backend.state.closed.size, 0);
+  await lease.release(); // idempotent after iterator return
+  assert.equal(backend.state.releaseCount, 1);
+});
+
+test("launch: breaking out of for-await releases the transport", async () => {
+  const { execFile, spawn, children } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  const lease = await backend.launch(makeRequest());
+
+  lease.push({ type: "no_observed_activity", sinceMs: 1 });
+  for await (const _event of lease.events) break;
 
   assert.equal(backend.state.releaseCount, 1);
-  assert.equal(backend.state.closed.size, 0);
+  assert.ok(children[0]._exited, "events subscription process stopped");
 });
 
 // ─── launch: cmux events translated to facts ─────────────────────────────────
