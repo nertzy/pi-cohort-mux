@@ -121,7 +121,7 @@ function makeFakeIo({
   const fifoPayloads = [];
   // Mutable across calls so a test can simulate the helper pane collapsing
   // between launches; a successful create makes the pane exist again.
-  const behavior = { paneGone: false, closeNotFound, closeError, createError, fifoUnread, snapshotWithoutSurface, snapshotNotFound, snapshotError, onSnapshot: null };
+  const behavior = { paneGone: false, closeNotFound, closeError, createError, fifoUnread, snapshotWithoutSurface, snapshotNotFound, snapshotError, onSnapshot: null, surfaceBusy: false };
 
   async function execFile(cli, args, _opts) {
     calls.push({ type: "exec", args: [...args] });
@@ -165,6 +165,12 @@ function makeFakeIo({
       return { stdout: JSON.stringify(snapshot) + "\n", stderr: "" };
     }
     if (args[0] === "close-surface") {
+      // cmux 0.65 refuses to close a surface whose process is still running.
+      if (behavior.surfaceBusy && !args.includes("--force")) {
+        throw Object.assign(new Error("close-surface failed"), {
+          stderr: "Error: confirmation_required: Surface has a running process; retry with force=true",
+        });
+      }
       if (behavior.closeNotFound) {
         const err = Object.assign(new Error("close-surface failed"), {
           stderr: "Error: not_found: Surface not found",
@@ -764,7 +770,7 @@ function closeSurfaceCalls(calls) {
 function assertRolledBack(calls, children) {
   const closes = closeSurfaceCalls(calls);
   assert.equal(closes.length, 1, "the created surface is closed");
-  assert.deepEqual(closes[0].args, ["close-surface", "--workspace", FAKE_WS_REF, "--surface", FAKE_SF_REF]);
+  assert.deepEqual(closes[0].args, ["close-surface", "--workspace", FAKE_WS_REF, "--surface", FAKE_SF_REF, "--force"]);
   assert.ok(children.every((child) => child._exited), "events subscription stopped");
 }
 
@@ -1288,6 +1294,20 @@ test("close: calls close-surface with the handle's workspace and surface refs", 
   assert.ok(closeCall, "close-surface call present");
   assert.equal(closeCall.args[closeCall.args.indexOf("--workspace") + 1], FAKE_WS_REF);
   assert.equal(closeCall.args[closeCall.args.indexOf("--surface") + 1], FAKE_SF_REF);
+});
+
+test("close: force-closes the owned surface even while its process is still running", async () => {
+  const { execFile, spawn, calls, behavior } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  const lease = await backend.launch(makeRequest());
+  await lease.release();
+  behavior.surfaceBusy = true; // child host still exiting after shutdown
+
+  await backend.close(lease.handle, "delivered");
+
+  const close = calls.filter((c) => c.type === "exec" && c.args[0] === "close-surface").at(-1);
+  assert.ok(close.args.includes("--force"), "close must not stall on cmux's confirmation");
+  assert.equal(close.args[close.args.indexOf("--surface") + 1], FAKE_SF_REF, "only the owned surface");
 });
 
 test("close: not_found is treated as idempotent absence — no error thrown", async () => {

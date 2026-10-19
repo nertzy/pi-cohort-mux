@@ -5,7 +5,7 @@
  *   detect()          — probe cmux availability and capabilities
  *   launch(request)   — add a child surface to the parent workspace's helper pane
  *   reattach(handle)  — reconnect to an existing surface by opaque handle
- *   close(handle)     — close the owned surface by handle (idempotent on not_found)
+ *   close(handle)     — force-close the owned surface by handle (idempotent on not_found)
  *
  * Placement mirrors the cohort bridge: children are terminal tabs in one
  * right-side helper pane inside the PARENT workspace — never new workspaces.
@@ -118,6 +118,18 @@ function parseCreateRefs(output) {
 function parsePaneRef(output) {
   const match = output.trim().match(/(?:^|\s)(pane:\d+)(?:\s|$)/);
   return match?.[1] ?? null;
+}
+
+// ─── Owned-surface close ─────────────────────────────────────────────────────
+
+/**
+ * close-surface for one owned surface. --force because cmux 0.65 refuses
+ * (confirmation_required) while the surface's process runs, and close is
+ * called right after the child host shuts down, or to stop a child outright;
+ * the surface is ours, so there is no one else to confirm with.
+ */
+function closeSurfaceArgs(workspaceRef, surfaceRef) {
+  return ["close-surface", "--workspace", workspaceRef, "--surface", surfaceRef, "--force"];
 }
 
 // ─── Snapshot (list-pane-surfaces) ───────────────────────────────────────────
@@ -382,7 +394,7 @@ export function createCmuxExecutionBackend({
   /** Close a surface this launch created but never handed out. */
   async function rollbackSurface(refs, error) {
     try {
-      await execFileFn(cli, ["close-surface", "--workspace", refs.workspaceRef, "--surface", refs.surfaceRef], { timeout: CLI_DEADLINE_MS });
+      await execFileFn(cli, closeSurfaceArgs(refs.workspaceRef, refs.surfaceRef), { timeout: CLI_DEADLINE_MS });
     } catch (closeError) {
       if (isNotFound(closeError)) return error;
       return new AggregateError([error, closeError], `launch failed and created surface ${refs.surfaceRef} could not be closed`);
@@ -674,7 +686,7 @@ export function createCmuxExecutionBackend({
       try {
         // Close only the owned surface; the shared helper pane and parent
         // workspace belong to the user and other children.
-        await execFileFn(cli, ["close-surface", "--workspace", workspaceRef, "--surface", surfaceRef], { timeout: CLI_DEADLINE_MS });
+        await execFileFn(cli, closeSurfaceArgs(workspaceRef, surfaceRef), { timeout: CLI_DEADLINE_MS });
         state.closed.add(handle.surface?.id ?? surfaceRef);
       } catch (error) {
         if (isNotFound(error)) {

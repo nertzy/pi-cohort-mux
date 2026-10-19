@@ -271,7 +271,7 @@ test(
         try {
           await execFile(
             "cmux",
-            ["close-surface", "--workspace", ownedSurface.workspaceRef, "--surface", ownedSurface.surfaceRef],
+            ["close-surface", "--workspace", ownedSurface.workspaceRef, "--surface", ownedSurface.surfaceRef, "--force"],
             { timeout: CLI_DEADLINE_MS },
           );
         } catch (error) {
