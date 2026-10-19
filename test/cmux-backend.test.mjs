@@ -19,7 +19,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import test, { after, before } from "node:test";
@@ -408,12 +409,30 @@ test("launch: child command starts in the request cwd", async () => {
   assert.equal(sh, "/bin/sh", "the login shell only starts /bin/sh; the launcher does the rest");
   assert.match(launcher, /\/surface-launch\.sh$/);
   assert.equal(fifo, join(launchDir, "environment.fifo"));
-  assert.equal(cli, "cmux", "the surface can close itself with the same CLI");
+  assert.ok(cli === "cmux" || cli.startsWith("/"), "the surface can close itself with the same CLI");
   assert.equal(cwd, "/exact/cwd/test", "the launcher enters the request cwd");
   assert.match(bootstrap, /\/env-bootstrap\.sh$/);
   assert.deepEqual(child, ["pi", "--session", "session.jsonl"]);
   assert.equal(await pathExists(launchDir), false, "launch directory removed after the hand-off");
 
+  await lease.release();
+});
+
+test("launch: the launcher gets the CLI's absolute path, not the login shell's PATH", async (t) => {
+  const bin = await mkdtemp(join(tmpdir(), "pi-cohort-mux-bin-"));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  await writeFile(join(bin, "cmux"), "#!/bin/sh\n");
+  await chmod(join(bin, "cmux"), 0o755);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `/nonexistent-dir:${bin}:${savedPath}`;
+  t.after(() => { process.env.PATH = savedPath; });
+  const { execFile, spawn, calls } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  const lease = await backend.launch(makeRequest());
+
+  const createCall = calls.find((c) => c.type === "exec" && c.args[0] === "new-pane");
+  assert.equal(commandTokens(createCall.args)[4], join(bin, "cmux"), "a late surface can reach cmux even if its login shell cannot");
   await lease.release();
 });
 

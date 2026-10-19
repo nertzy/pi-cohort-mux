@@ -40,8 +40,9 @@
  * rejection is safer than undefined behavior.
  */
 import { execFile as execFileCallback, spawn as spawnProcess } from "node:child_process";
-import { readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { constants as fsConstants } from "node:fs";
+import { access, readFile, rm } from "node:fs/promises";
+import { delimiter, isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -108,6 +109,21 @@ function isAbort(error) {
  */
 function createOutcomeUnknown(error) {
   return isCliTimeout(error) || isAbort(error) || error?.unexpectedCreateOutput === true;
+}
+
+/**
+ * Resolve a bare CLI name against this process's PATH. The child surface runs
+ * under the user's login shell, whose PATH need not reach cmux (a CI runner's
+ * bash does not), and a late surface must be able to close itself.
+ */
+async function resolveExecutable(name) {
+  if (name.includes("/")) return name;
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (!isAbsolute(directory)) continue;
+    const candidate = join(directory, name);
+    if (await access(candidate, fsConstants.X_OK).then(() => true, () => false)) return candidate;
+  }
+  return name;
 }
 
 // ─── Environment scrubbing ──────────────────────────────────────────────────
@@ -585,7 +601,7 @@ export function createCmuxExecutionBackend({
         LAUNCHER_PATH,
         environmentPipe.directory,
         environmentPipe.pipePath,
-        cli,
+        await resolveExecutable(cli),
         request.cwd,
         BOOTSTRAP_PATH,
         request.command,
