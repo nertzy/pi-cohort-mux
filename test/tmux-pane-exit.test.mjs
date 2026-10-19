@@ -35,3 +35,12 @@ test("pane_dead poll stops quietly when aborted", async () => {
   await polling;
   assert.ok(tmux.polls() >= 1);
 });
+
+test("exit-status skip reason names tmux releases older than 3.5 only", async () => {
+  const { exitStatusSkipReason } = await import("./support/tmux-pane-exit.mjs");
+  assert.match(exitStatusSkipReason("tmux 3.4"), /tmux 3\.4.*exit status/);
+  assert.match(exitStatusSkipReason("tmux 3.3a"), /3\.3a/);
+  for (const version of ["tmux 3.5", "tmux 3.6a", "tmux 3.8", "tmux 4.0", "tmux next-3.5", "tmux master"]) {
+    assert.equal(exitStatusSkipReason(version), false, version);
+  }
+});

@@ -44,3 +44,17 @@ export async function firstPaneDeath({ hooked, waiter, server, pane }) {
     waiter.kill("SIGTERM");
   }
 }
+
+/**
+ * Skip reason for tests that need tmux to record a pane's exit status, or false.
+ * On tmux 3.4 (ubuntu-24.04) a pane can be marked dead and never get a status
+ * or its pane-died hook, so an exact-status assertion can only time out there.
+ * Development builds ("next-3.5", "master") are treated as current.
+ */
+export function exitStatusSkipReason(versionOutput) {
+  const match = versionOutput.trim().match(/^tmux (\d+)\.(\d+)([a-z]?)$/);
+  if (!match) return false;
+  const [major, minor] = [Number(match[1]), Number(match[2])];
+  if (major > 3 || (major === 3 && minor >= 5)) return false;
+  return `${versionOutput.trim()} can leave a dead pane without an exit status or pane-died hook; needs tmux 3.5 or later`;
+}

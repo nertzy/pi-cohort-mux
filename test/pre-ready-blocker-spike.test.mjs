@@ -9,10 +9,11 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { createFakeScheduler, createMachine } from "./fixtures/lifecycle/state-machine.mjs";
 import { createJsonlFrameBuffer } from "./fixtures/startup-blocker/jsonl-frame-buffer.mjs";
-import { firstPaneDeath } from "./support/tmux-pane-exit.mjs";
+import { exitStatusSkipReason, firstPaneDeath } from "./support/tmux-pane-exit.mjs";
 
 const execFile = promisify(execFileCallback);
-const tmuxAvailable = await execFile("tmux", ["-V"]).then(() => true, () => false);
+const tmuxVersion = await execFile("tmux", ["-V"]).then(({ stdout }) => stdout, () => undefined);
+const tmuxAvailable = tmuxVersion !== undefined;
 const tmuxTimeout = 5_000;
 
 function fixtureMachine() {
@@ -214,7 +215,7 @@ test("authoritative nonzero exit before ready is startup_failed with exact prove
   assert.deepEqual(snapshot.provenance.at(-1), { type: "exited", source: "mux" });
 });
 
-test("real tmux lifecycle hook retains a blocked pane, recovers on control ready, and observes clean exit", { skip: !tmuxAvailable && "tmux is unavailable; reducer-only cases remain active" }, async () => {
+test("real tmux lifecycle hook retains a blocked pane, recovers on control ready, and observes clean exit", { skip: tmuxAvailable ? exitStatusSkipReason(tmuxVersion) : "tmux is unavailable; reducer-only cases remain active" }, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "pre-ready-blocker-"));
   const fifo = path.join(directory, "release.fifo");
   const socketPath = path.join(directory, "control.sock");
