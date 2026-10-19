@@ -290,27 +290,42 @@ export function createCmuxExecutionBackend({
     helperPane: null,
   };
 
+  // Helper-pane selection and surface creation run one launch at a time, so
+  // concurrent first launches share one pane instead of each splitting the
+  // workspace. Only the create CLI call is serialized, not the env hand-off.
+  let helperLock = Promise.resolve();
+  async function withHelperLock(operation) {
+    const previous = helperLock;
+    let unlock;
+    helperLock = new Promise((resolve) => { unlock = resolve; });
+    await previous;
+    try { return await operation(); } finally { unlock(); }
+  }
+
   async function createSurface(parentWorkspace, command, signal) {
-    // First child creates the right-side helper pane; later children become
-    // tabs in it. The pane never holds an idle shell surface. cmux collapses
-    // a pane when its last surface closes, so verify before reuse.
-    let helper = state.helperPane;
-    if (helper) {
-      try {
-        await takeSnapshot(execFileFn, cli, parentWorkspace, helper.ref);
-      } catch {
-        helper = null;
-        state.helperPane = null;
+    return withHelperLock(async () => {
+      // First child creates the right-side helper pane; later children become
+      // tabs in it. The pane never holds an idle shell surface. cmux collapses
+      // a pane when its last surface closes, so verify before reuse.
+      let helper = state.helperPane;
+      if (helper) {
+        try {
+          await takeSnapshot(execFileFn, cli, parentWorkspace, helper.ref);
+        } catch {
+          helper = null;
+          state.helperPane = null;
+        }
       }
-    }
-    const createArgs = helper
-      ? ["new-surface", "--workspace", parentWorkspace, "--pane", helper.ref, "--type", "terminal", "--focus", "false", "--command", command]
-      : ["new-pane", "--workspace", parentWorkspace, "--type", "terminal", "--direction", "right", "--focus", "false", "--command", command];
-    const result = await execFileFn(cli, createArgs, { timeout: CLI_DEADLINE_MS, signal });
-    const refs = parseCreateRefs(result.stdout);
-    const paneRef = helper?.ref ?? refs.paneRef;
-    if (!helper && paneRef) state.helperPane = { ref: paneRef, id: null };
-    return { ...refs, paneRef };
+      const createArgs = helper
+        ? ["new-surface", "--workspace", parentWorkspace, "--pane", helper.ref, "--type", "terminal", "--focus", "false", "--command", command]
+        : ["new-pane", "--workspace", parentWorkspace, "--type", "terminal", "--direction", "right", "--focus", "false", "--command", command];
+      const result = await execFileFn(cli, createArgs, { timeout: CLI_DEADLINE_MS, signal });
+      const refs = parseCreateRefs(result.stdout);
+      const paneRef = helper?.ref ?? refs.paneRef;
+      // Publish the pane before unlocking so the next launch adds a tab to it.
+      if (!helper && paneRef) state.helperPane = { ref: paneRef, id: null };
+      return { ...refs, paneRef };
+    });
   }
 
   /** Wait for the child to read its environment, bounded and abortable. */

@@ -400,6 +400,33 @@ test("launch: first child creates the right-side helper pane, later children bec
   await second.release();
 });
 
+test("launch: concurrent first launches share one helper pane", async () => {
+  const { execFile, spawn, calls } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  const leases = await Promise.all([backend.launch(makeRequest()), backend.launch(makeRequest()), backend.launch(makeRequest())]);
+
+  const creates = calls.filter((c) => c.type === "exec" && (c.args[0] === "new-pane" || c.args[0] === "new-surface"));
+  assert.deepEqual(creates.map((c) => c.args[0]), ["new-pane", "new-surface", "new-surface"], "one pane, then tabs in it");
+  for (const create of creates.slice(1)) assert.equal(create.args[create.args.indexOf("--pane") + 1], FAKE_PN_REF);
+  await Promise.all(leases.map((lease) => lease.release()));
+});
+
+test("launch: a failed helper-pane create does not block the next launch", async () => {
+  const { execFile, spawn, calls, behavior } = makeFakeIo({ createError: new Error("new-pane failed") });
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  // The second launch queues behind the first; the lock must not wedge.
+  const results = await Promise.allSettled([backend.launch(makeRequest()), backend.launch(makeRequest())]);
+  assert.deepEqual(results.map((r) => r.status), ["rejected", "rejected"]);
+  behavior.createError = null;
+  const lease = await backend.launch(makeRequest());
+
+  const newPanes = calls.filter((c) => c.type === "exec" && c.args[0] === "new-pane");
+  assert.equal(newPanes.length, 3, "each launch retried pane creation after a failed create");
+  await lease.release();
+});
+
 test("launch: collapsed helper pane is recreated instead of failing", async () => {
   const { execFile, spawn, calls, behavior } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
