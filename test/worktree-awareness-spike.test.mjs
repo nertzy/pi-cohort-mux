@@ -6,13 +6,17 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { firstPaneDeath } from "./support/tmux-pane-exit.mjs";
+import {
+  exitStatusSkipReason,
+  firstPaneDeath,
+} from "./support/tmux-pane-exit.mjs";
 
 const execFile = promisify(execFileCallback);
-const tmuxAvailable = await execFile("tmux", ["-V"]).then(
-  () => true,
-  () => false,
+const tmuxVersion = await execFile("tmux", ["-V"]).then(
+  ({ stdout }) => stdout,
+  () => undefined,
 );
+const tmuxAvailable = tmuxVersion !== undefined;
 const deadline = 5_000;
 
 function command(command, args, options = {}) {
@@ -249,7 +253,10 @@ test("direct reporter preserves a plain non-Git cwd without Git or awareness met
 });
 
 test("real tmux reporters preserve Cohort-resolved cwd across linked worktrees", {
-  skip: !tmuxAvailable && "tmux is unavailable; no real-surface cases ran",
+  // Each reporter's exact exit status is asserted; tmux before 3.5 can lose it.
+  skip: tmuxAvailable
+    ? exitStatusSkipReason(tmuxVersion)
+    : "tmux is unavailable; no real-surface cases ran",
 }, async () => {
   const directory = await realpath(
     await mkdtemp(path.join(os.tmpdir(), "worktree-awareness-")),
