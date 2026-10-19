@@ -170,19 +170,43 @@ async function startReporter(directory) {
 }
 
 // cmux 0.65 can print "OK workspace:N" before that ref resolves; wait until
-// a snapshot succeeds so later steps never race workspace registration.
-async function createWorkspace({ name, cwd, command }) {
+// a snapshot succeeds so later steps never race workspace registration. The
+// ref joins `owned` the moment cmux prints it, so a failed wait still cleans up.
+async function createWorkspace({ name, cwd, command, owned }) {
   const { stdout } = await cmux("workspace", "create", "--name", name, "--cwd", cwd, "--focus", "false", "--command", command);
   assert.match(stdout.trim(), /^OK workspace:\d+$/);
   const workspaceRef = stdout.trim().split(" ")[1];
+  const state = { resolved: false };
+  owned.set(workspaceRef, state);
   const end = Date.now() + cliDeadline;
   while (true) {
     try {
       await snapshot(workspaceRef);
+      state.resolved = true;
       return workspaceRef;
     } catch (error) {
       if (Date.now() >= end || !isGone(error)) throw error;
     }
+    await new Promise((resolve) => setTimeout(resolve, disappearancePoll));
+  }
+}
+
+// Close an owned workspace by its exact ref. --force because teardown can run
+// while the owned command is still starting, which cmux otherwise refuses with
+// confirmation_required. Not-found on a ref that never resolved may mean "not
+// registered yet", so keep retrying until the deadline rather than assuming
+// absence; only a ref seen live can be not-found = gone.
+async function closeOwnedWorkspace(workspaceRef, { resolved }) {
+  const end = Date.now() + cliDeadline;
+  while (true) {
+    try {
+      await cmux("workspace", "close", "--force", workspaceRef);
+      return waitUntilSnapshotGone(workspaceRef);
+    } catch (error) {
+      if (!isGone(error)) throw error;
+      if (resolved) return;
+    }
+    if (Date.now() >= end) throw new Error(`owned workspace never resolved for close; it may appear later: ${workspaceRef}`);
     await new Promise((resolve) => setTimeout(resolve, disappearancePoll));
   }
 }
@@ -213,22 +237,24 @@ async function waitUntilSnapshotGone(workspaceRef) {
   }
 }
 
-test("real public cmux backend proves workspace/surface lifecycle parity end to end", { skip }, async () => {
+test("real public cmux backend proves workspace/surface lifecycle parity end to end", { skip }, async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "cmux-parity-"));
   const expectedCwd = await realpath(directory);
   const suffix = `${process.pid}-${Date.now()}`;
   let reporter;
   let events;
+  const owned = new Map();
   let workspaceRef;
   let decoyRef;
   let decoy;
+  let failure;
   try {
     reporter = await startReporter(directory);
     events = subscribe(["workspace.created", "surface.created", "surface.closed", "pane.closed", "workspace.closed"]);
     await events.ack;
     const { stdout: callerBefore } = await cmux("current-workspace");
 
-    decoyRef = await createWorkspace({ name: `cmux-decoy-${suffix}`, cwd: directory, command: quoteShell("true") });
+    decoyRef = await createWorkspace({ name: `cmux-decoy-${suffix}`, cwd: directory, command: quoteShell("true"), owned });
     decoy = await snapshot(decoyRef);
     await events.waitFor(
       (fact) => fact.name === "workspace.created" && fact.workspace_id === decoy.workspace_id,
@@ -238,6 +264,7 @@ test("real public cmux backend proves workspace/surface lifecycle parity end to 
       name: `cmux-parity-${suffix}`,
       cwd: directory,
       command: [process.execPath, reporterPath, reporter.socketPath].map(quoteShell).join(" "),
+      owned,
     });
     const { stdout: callerAfter } = await cmux("current-workspace");
     assert.equal(callerAfter.trim(), callerBefore.trim(), "--focus false must not move caller focus");
@@ -291,17 +318,22 @@ test("real public cmux backend proves workspace/surface lifecycle parity end to 
     );
     await cmux("workspace", "close", decoyRef);
     await decoyClose;
-    decoyRef = undefined;
+    owned.delete(decoyRef);
     await cmux("workspace", "close", reattached.workspaceRef);
     await Promise.all([surfaceClose, workspaceClose]);
-    workspaceRef = undefined;
+    owned.delete(workspaceRef);
     await waitUntilSnapshotGone(reattached.workspaceRef);
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    if (workspaceRef) await cmux("workspace", "close", workspaceRef).catch(() => {});
-    if (decoyRef) await cmux("workspace", "close", decoyRef).catch(() => {});
+    const leaks = [];
+    for (const [ref, state] of owned) await closeOwnedWorkspace(ref, state).catch((error) => leaks.push(error));
     if (events) await events.stop().catch(() => {});
     if (reporter) await reporter.close();
     await rm(directory, { recursive: true, force: true });
+    for (const leak of leaks) t.diagnostic(`cleanup: ${leak.message}`);
+    if (leaks.length && !failure) throw new AggregateError(leaks, "owned cmux workspaces leaked");
   }
 });
 
