@@ -58,6 +58,7 @@ const CLI_DEADLINE_MS = 10_000;
 const ACK_DEADLINE_MS = 10_000;
 const HANDOFF_DEADLINE_MS = 10_000;
 const ORPHAN_GRACE_MS = 3_000;
+const COOLDOWN_MS = 60_000;
 const BOOTSTRAP_PATH = environmentBootstrapPath;
 const LAUNCHER_PATH = fileURLToPath(new URL("./surface-launch.sh", import.meta.url));
 
@@ -313,6 +314,9 @@ function translateCmuxEvent(frame, surface) {
  *   environment after the surface exists (for testing).
  * @param {number} [options.orphanGraceMs] How long an ambiguous create failure
  *   waits for a late surface to report its own id (for testing).
+ * @param {number} [options.cooldownMs] How long detect() reports cmux
+ *   unavailable after a create timed out (for testing).
+ * @param {Function} [options.now] Clock for the cool-down (for testing).
  */
 export function createCmuxExecutionBackend({
   cli = "cmux",
@@ -320,6 +324,8 @@ export function createCmuxExecutionBackend({
   spawn: spawnFn = spawnProcess,
   handoffDeadlineMs = HANDOFF_DEADLINE_MS,
   orphanGraceMs = ORPHAN_GRACE_MS,
+  cooldownMs = COOLDOWN_MS,
+  now = Date.now,
 } = {}) {
   const state = {
     trace: [],
@@ -330,7 +336,24 @@ export function createCmuxExecutionBackend({
     reconciles: 0,
     lastRequest: undefined,
     helperPane: null,
+    cooldown: null,
   };
+
+  // A create that cmux never answered means its main thread is stalled (a
+  // modal window, the app not frontmost). Report cmux unavailable for a while,
+  // so pi-cohort's auto selection falls back to native at once instead of
+  // every run waiting out the CLI deadline, and fail launches already queued.
+  function coolingDownReason() {
+    if (!state.cooldown || now() >= state.cooldown.until) return undefined;
+    return state.cooldown.reason;
+  }
+  function startCooldown(error) {
+    const seconds = Math.round(cooldownMs / 1_000);
+    state.cooldown = {
+      until: now() + cooldownMs,
+      reason: `cmux did not answer a create within its deadline (${error.message}); cooling down for ${seconds}s`,
+    };
+  }
 
   // Helper-pane selection and surface creation run one launch at a time, so
   // concurrent first launches share one pane instead of each splitting the
@@ -346,7 +369,15 @@ export function createCmuxExecutionBackend({
 
   async function createSurface(parentWorkspace, command, signal) {
     return withHelperLock(async () => {
-      return createSurfaceUnlocked(parentWorkspace, command, signal);
+      const cooling = coolingDownReason();
+      if (cooling) throw new Error(`cmux backend is cooling down: ${cooling}`);
+      try {
+        return await createSurfaceUnlocked(parentWorkspace, command, signal);
+      } catch (error) {
+        // Inside the lock, so launches queued behind this one see it.
+        if (isCliTimeout(error) && !isAbort(error)) startCooldown(error);
+        throw error;
+      }
     });
   }
 
@@ -470,6 +501,8 @@ export function createCmuxExecutionBackend({
     // ── detect ─────────────────────────────────────────────────────────────
 
     async detect() {
+      const cooling = coolingDownReason();
+      if (cooling) return { available: false, version: "", capabilities: [], reason: cooling };
       try {
         const { stdout: versionOut } = await execFileFn(cli, ["--version"], { timeout: CLI_DEADLINE_MS });
         const { stdout: capsJson } = await execFileFn(cli, ["capabilities"], { timeout: CLI_DEADLINE_MS });
@@ -501,6 +534,8 @@ export function createCmuxExecutionBackend({
       }
 
       const environmentPayload = serializeEnvironment(scrubMuxEnvironment(request.environment));
+      const cooling = coolingDownReason();
+      if (cooling) throw new Error(`cmux backend is cooling down: ${cooling}`);
 
       // Observe (subscribe) before start (surface create) — spike ordering.
       state.trace.push("observe");

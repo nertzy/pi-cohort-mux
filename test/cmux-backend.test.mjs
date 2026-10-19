@@ -208,6 +208,17 @@ const pathExists = (path) => access(path).then(() => true, () => false);
 /** An execFile timeout as Node reports it: the child was killed. */
 const createTimeout = () => Object.assign(new Error("Command failed: cmux new-pane (timed out)"), { killed: true, signal: "SIGTERM", code: null });
 
+function withSocketPath(fn) {
+  return async () => {
+    const saved = process.env.CMUX_SOCKET_PATH;
+    process.env.CMUX_SOCKET_PATH = "/tmp/cmux.sock";
+    try { await fn(); } finally {
+      if (saved === undefined) delete process.env.CMUX_SOCKET_PATH;
+      else process.env.CMUX_SOCKET_PATH = saved;
+    }
+  };
+}
+
 function makeRequest(overrides = {}) {
   return {
     command: "pi",
@@ -921,7 +932,7 @@ test("launch: an orphan that cannot be closed is reported alongside the create f
   });
 });
 
-test("launch: an aborted create also collects its orphan", async () => {
+test("launch: an aborted create also collects its orphan, without a cool-down", withSocketPath(async () => {
   const io = makeFakeIo({ createError: Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }) });
   lateSurface(io, "ORPHAN-UUID");
   const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 1_000 });
@@ -929,6 +940,41 @@ test("launch: an aborted create also collects its orphan", async () => {
   await assert.rejects(backend.launch(makeRequest()), { name: "AbortError" });
 
   assert.equal(closeSurfaceCalls(io.calls).length, 1);
+  assert.equal((await backend.detect()).available, true, "the caller cancelled; cmux is not unhealthy");
+}));
+
+// ─── cool-down after a create timeout ────────────────────────────────────────
+
+test("detect: after a create timeout cmux is unavailable for the cool-down, without asking cmux", withSocketPath(async () => {
+  let clock = 1_000_000;
+  const io = makeFakeIo({ createError: createTimeout() });
+  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 10, cooldownMs: 60_000, now: () => clock });
+  await assert.rejects(backend.launch(makeRequest()));
+  const callsBefore = io.calls.length;
+
+  const cooling = await backend.detect();
+  assert.equal(cooling.available, false);
+  assert.match(cooling.reason, /timed out.*60s/);
+  assert.equal(io.calls.length, callsBefore, "a cooling-down detect answers without cmux");
+
+  clock += 60_001;
+  io.behavior.createError = null;
+  assert.equal((await backend.detect()).available, true, "probes cmux again after the cool-down");
+}));
+
+test("launch: launches queued behind a timed-out create fail fast instead of each waiting out the deadline", async () => {
+  const io = makeFakeIo({ createError: createTimeout() });
+  io.behavior.onCreate = () => new Promise((resolve) => setTimeout(resolve, 30));
+  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 10 });
+
+  const results = await Promise.allSettled([backend.launch(makeRequest()), backend.launch(makeRequest())]);
+
+  assert.deepEqual(results.map((r) => r.status), ["rejected", "rejected"]);
+  // Whichever launch took the lock first timed out; the other failed fast.
+  const messages = results.map((r) => r.reason.message).sort();
+  assert.match(messages[0], /^Command failed: cmux new-pane \(timed out\)$/);
+  assert.match(messages[1], /^cmux backend is cooling down/);
+  assert.equal(io.calls.filter((c) => c.type === "exec" && c.args[0] === "new-pane").length, 1);
 });
 
 // ─── events subscription lifecycle ───────────────────────────────────────────
