@@ -12,7 +12,7 @@
     "src"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=26"
   },
   "license": "MIT",
   "repository": "github:nertzy/pi-cohort-mux",
