@@ -10,9 +10,9 @@ contain secrets.
 
 ## Installation
 
-The adapter supports `pi-cohort` 6.1.0 and later compatible 6.x releases;
-6.1.0 is the first release that published the execution-backend SPI and
-testkit. Once separately published, install the adapter entrypoint only;
+The adapter supports `pi-cohort` 7.x and peer-depends on it, so it registers
+with the host's copy instead of installing its own. Once separately published,
+install the adapter entrypoint only;
 `pi-cohort-mux-cmux` declares `pi-cohort-mux` as its dependency. Upstream
 `pi-cohort` remains the separately activated host and owns backend selection,
 orchestration, control, reporting, and detached reload.

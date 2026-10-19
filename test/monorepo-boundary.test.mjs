@@ -24,7 +24,9 @@ test("root is a private workspace and only the adapter activates in Pi", () => {
   assert.equal(core.pi, undefined);
   assert.deepEqual(adapter.pi.extensions, ["./src/index.js"]);
   assert.equal(adapter.dependencies["pi-cohort-mux"], core.version);
-  assert.match(adapter.dependencies["pi-cohort"], /^\^6\.1\.0/);
+  assert.equal(adapter.dependencies["pi-cohort"], undefined, "the host's pi-cohort is shared, never a private copy");
+  assert.equal(adapter.peerDependencies["pi-cohort"], "^7.0.0");
+  assert.equal(adapter.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.85.0");
 });
 
 test("adapter reload factory is a public package export", async () => {
