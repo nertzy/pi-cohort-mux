@@ -29,6 +29,9 @@ npm ci
 npm run check
 ```
 
+Lint needs Node.js 26 or newer and `actionlint`; see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Related projects
 
 - [jjuraszek/pi-cohort](https://github.com/jjuraszek/pi-cohort) — Cohort

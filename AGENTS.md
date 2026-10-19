@@ -21,7 +21,8 @@ npm run check     # lint, then the full test suite
 npm run lint:fix  # Biome and markdownlint auto-fixes
 ```
 
-Tests that need `pi`, `tmux`, or a live cmux session skip with a reason when the
+Lint also needs `actionlint` on `PATH`; [CONTRIBUTING.md](CONTRIBUTING.md)
+covers installing it. Tests that need `pi`, `tmux`, or a live cmux session skip with a reason when the
 tool is absent. The real-cmux tests mutate the running app, so run them one file
 at a time:
 
