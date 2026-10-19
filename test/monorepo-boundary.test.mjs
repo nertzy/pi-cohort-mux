@@ -7,10 +7,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import { piModule, resolvePi } from "./support/pi-runtime.mjs";
+
 const exec = promisify(execFile);
 const root = JSON.parse(await readFile(new URL("../package.json", import.meta.url)));
 const core = JSON.parse(await readFile(new URL("../packages/pi-cohort-mux/package.json", import.meta.url)));
 const adapter = JSON.parse(await readFile(new URL("../packages/pi-cohort-mux-cmux/package.json", import.meta.url)));
+const piLoader = piModule(resolvePi(), "dist/core/extensions/index.js");
 
 test("root is a private workspace and only the adapter activates in Pi", () => {
   assert.equal(root.private, true);
@@ -30,7 +33,7 @@ test("adapter reload factory is a public package export", async () => {
   assert.equal(module.createCmuxExecutionBackend().name, "cmux");
 });
 
-test("packed adapter alone installs core transitively and activates through Pi", async () => {
+test("packed adapter alone installs core transitively and activates through Pi", { skip: piLoader.skipReason ?? false }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-cohort-mux-consumer-"));
   let registry;
   try {
@@ -75,8 +78,7 @@ test("packed adapter alone installs core transitively and activates through Pi",
     const installed = JSON.parse(await readFile(join(directory, "node_modules/pi-cohort-mux/package.json")));
     assert.equal(installed.name, "pi-cohort-mux");
 
-    const piLoader = "/opt/homebrew/opt/pi-coding-agent/libexec/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/index.js";
-    const { loadExtensions } = await import(piLoader);
+    const { loadExtensions } = await import(piLoader.url);
     const adapterEntry = join(directory, "node_modules/pi-cohort-mux-cmux/src/index.js");
     const loaded = await loadExtensions([adapterEntry], directory);
     assert.deepEqual(loaded.errors, []);

@@ -8,14 +8,17 @@ import { spawn } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { findOnPath, piDependency, resolvePi } from "./support/pi-runtime.mjs";
+
 const fixtureDirectory = new URL("./fixtures/session-log/", import.meta.url);
 const extension = new URL("./fixtures/session-log/reporting-extension.mjs", import.meta.url);
-const piAiModule = "/opt/homebrew/Cellar/pi-coding-agent/0.85.0/libexec/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
-const tuiRuntimePrerequisites = ["/opt/homebrew/bin/pi", "/opt/homebrew/bin/tmux", piAiModule];
+const pi = resolvePi();
+const piAi = piDependency(pi, "@earendil-works/pi-ai");
+const tmux = findOnPath("tmux");
 
-function runtimeSkipReason(exists = existsSync) {
-  const missingPrerequisite = tuiRuntimePrerequisites.find((runtimePath) => !exists(runtimePath));
-  return missingPrerequisite && `requires ${missingPrerequisite} for the Pi 0.85.0 real TUI runtime proof`;
+function runtimeSkipReason(runtime = { pi, piAi, tmux }) {
+  const missing = runtime.pi.skipReason ?? runtime.piAi.skipReason ?? (runtime.tmux ? undefined : "requires an executable `tmux` on PATH");
+  return missing && `${missing} for the real Pi TUI runtime proof`;
 }
 
 function command(command, args, options = {}) {
@@ -59,13 +62,16 @@ test("session-log reporting spike has explicit runtime fixtures", () => {
   assert.match(fileURLToPath(fixtureDirectory), /test\/fixtures\/session-log\/$/);
 });
 
-test("TUI runtime skip guard checks the version-pinned Pi AI module", () => {
-  const missing = runtimeSkipReason((runtimePath) => runtimePath !== piAiModule);
+test("TUI runtime skip guard names the prerequisite it looked for", () => {
+  const present = { pi: { executable: "/bin/pi", root: "/pi" }, piAi: { url: "file:///pi-ai.js" }, tmux: "/bin/tmux" };
 
-  assert.equal(missing, `requires ${piAiModule} for the Pi 0.85.0 real TUI runtime proof`);
+  assert.equal(runtimeSkipReason(present), undefined);
+  assert.equal(runtimeSkipReason({ ...present, pi: resolvePi("/nonexistent") }), "requires an executable `pi` on PATH for the real Pi TUI runtime proof");
+  assert.equal(runtimeSkipReason({ ...present, piAi: { skipReason: "requires @earendil-works/pi-ai resolvable from /pi" } }), "requires @earendil-works/pi-ai resolvable from /pi for the real Pi TUI runtime proof");
+  assert.equal(runtimeSkipReason({ ...present, tmux: null }), "requires an executable `tmux` on PATH for the real Pi TUI runtime proof");
 });
 
-test("Pi 0.85.0 TUI session log reports readiness, settlement, and shutdown without network", async (t) => {
+test("Pi TUI session log reports readiness, settlement, and shutdown without network", async (t) => {
   const skipReason = runtimeSkipReason();
   if (skipReason) {
     t.skip(skipReason);
@@ -112,10 +118,10 @@ test("Pi 0.85.0 TUI session log reports readiness, settlement, and shutdown with
     assert.equal((await stat(fifo)).mode & 0o777, 0o600);
     assert.equal((await stat(socket)).mode & 0o777, 0o600);
 
-    await writeFile(runner, `#!/bin/sh\n/opt/homebrew/bin/pi --no-extensions --extension ${fileURLToPath(extension)} --session ${session} --model fixture/fixed\nstatus=$?\ntmux -L ${serverName} wait-for -S ${completionEvent}\nexit $status\n`, { mode: 0o700 });
+    await writeFile(runner, `#!/bin/sh\n${pi.executable} --no-extensions --extension ${fileURLToPath(extension)} --session ${session} --model fixture/fixed\nstatus=$?\ntmux -L ${serverName} wait-for -S ${completionEvent}\nexit $status\n`, { mode: 0o700 });
     await command("tmux", ["-L", serverName, "new-session", "-d", "-s", serverName, "/bin/sh", runner], {
       cwd: directory,
-      env: { ...process.env, PI_COHORT_SPIKE_SOCKET: socket, PI_COHORT_SPIKE_FIFO: fifo, PI_COHORT_SPIKE_PI_AI_MODULE: piAiModule },
+      env: { ...process.env, PI_COHORT_SPIKE_SOCKET: socket, PI_COHORT_SPIKE_FIFO: fifo, PI_COHORT_SPIKE_PI_AI_MODULE: piAi.url },
     });
     tmuxStarted = true;
     await command("tmux", ["-L", serverName, "set-option", "-t", serverName, "remain-on-exit", "on"]);

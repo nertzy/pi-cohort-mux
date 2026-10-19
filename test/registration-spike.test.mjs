@@ -1,30 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { accessSync, constants } from "node:fs";
 import { once } from "node:events";
-import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { beforeEach } from "node:test";
+
+import { resolvePi } from "./support/pi-runtime.mjs";
 
 const fixture = (name) => new URL(`fixtures/registration/${name}`, import.meta.url);
 const fixturePath = (name) => fileURLToPath(fixture(name));
 const registryKey = Symbol.for("pi-cohort.registration-spike.backends.v1");
 const probeTimeout = 10_000;
-
-function resolvePi() {
-  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
-    const candidate = join(directory || ".", "pi");
-
-    try {
-      accessSync(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // Keep searching PATH for an executable pi binary.
-    }
-  }
-
-  return null;
-}
 
 async function stopChild(child, close) {
   if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
@@ -78,7 +63,7 @@ async function probePi(pi, extensions) {
   }
 }
 
-const pi = resolvePi();
+const { executable: pi = null, skipReason: piSkipReason } = resolvePi();
 const apiA = await import(fixture("public-api-a.mjs"));
 const apiB = await import(fixture("public-api-b.mjs"));
 const core = (await import(fixture("fake-core-extension.mjs"))).default;
@@ -156,8 +141,8 @@ for (const [name, extensions] of [
   ["companion-first", ["fake-companion-extension.mjs", "fake-core-extension.mjs"]],
   ["core-first", ["fake-core-extension.mjs", "fake-companion-extension.mjs"]],
 ]) {
-  test(`Pi 0.85.0 RPC smoke discovers a backend with ${name} CLI extension order`, {
-    skip: pi === null && "Pi executable is unavailable on PATH",
+  test(`Pi RPC smoke discovers a backend with ${name} CLI extension order`, {
+    skip: piSkipReason ?? false,
     timeout: probeTimeout + 2_000,
   }, async () => {
     const { exitCode, signal, stderr, stdout } = await probePi(pi, extensions);
