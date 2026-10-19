@@ -267,6 +267,26 @@ test("detect: available when CMUX_WORKSPACE_ID, CMUX_SOCKET_PATH set and events.
   }
 });
 
+test("detect: confirms CMUX_WORKSPACE_ID names a live workspace", withSocketPath(async () => {
+  const { execFile, spawn, calls } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  assert.equal((await backend.detect()).available, true);
+  const probe = calls.find((c) => c.args.includes("list-pane-surfaces"));
+  assert.ok(probe, "one read-only workspace probe");
+  assert.equal(probe.args[probe.args.indexOf("--workspace") + 1], FAKE_WS_ID);
+  assert.equal(probe.args.includes("--pane"), false);
+}));
+
+test("detect: unavailable with a reason when CMUX_WORKSPACE_ID names no workspace", withSocketPath(async () => {
+  const { execFile, spawn } = makeFakeIo({ snapshotNotFound: true });
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  const result = await backend.detect();
+  assert.equal(result.available, false);
+  assert.match(result.reason, /CMUX_WORKSPACE_ID .*not found/);
+}));
+
 test("detect: unavailable when CMUX env markers absent", async () => {
   const { execFile, spawn } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });

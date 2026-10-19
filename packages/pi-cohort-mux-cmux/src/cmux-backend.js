@@ -509,10 +509,22 @@ export function createCmuxExecutionBackend({
         const caps = JSON.parse(capsJson);
         const capabilities = Array.isArray(caps.capabilities) ? caps.capabilities : [];
         const version = versionOut.trim();
+        const parentWorkspace = process.env.CMUX_WORKSPACE_ID;
         const available =
-          Boolean(process.env.CMUX_WORKSPACE_ID) &&
+          Boolean(parentWorkspace) &&
           Boolean(process.env.CMUX_SOCKET_PATH) &&
           capabilities.includes("events.v1");
+        if (!available) return { available, version, capabilities };
+        // One read-only probe: a stale or foreign CMUX_WORKSPACE_ID would
+        // otherwise surface only as a failed launch.
+        try {
+          await takeSnapshot(execFileFn, cli, parentWorkspace);
+        } catch (error) {
+          const reason = isNotFound(error)
+            ? `CMUX_WORKSPACE_ID ${parentWorkspace} not found in cmux`
+            : `cmux workspace probe failed: ${error.message}`;
+          return { available: false, version, capabilities, reason };
+        }
         return { available, version, capabilities };
       } catch {
         return { available: false, version: "", capabilities: [] };
