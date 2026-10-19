@@ -131,7 +131,10 @@ test("Pi TUI session log reports readiness, settlement, and shutdown without net
     const hello = await onceEvent(events, "hello");
     assert.equal(hello.token, token);
     const ready = onceEvent(events, "ready");
-    control.write('{"type":"authenticated"}\n');
+    // Socket chunks are not frame boundaries: split the frame across two writes.
+    control.write('{"type":"authen');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    control.write('ticated"}\n');
     await ready;
 
     const earlyEntries = (await readFile(session, "utf8")).trim().split("\n").map(JSON.parse);

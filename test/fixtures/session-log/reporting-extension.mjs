@@ -48,8 +48,16 @@ export default function (pi) {
 }
 
 control.on("connect", () => notify({ type: "hello", token }));
+// Socket chunks are not frame boundaries: decode UTF-8 incrementally and keep
+// any partial line until its newline arrives.
+let pending = "";
+control.setEncoding("utf8");
 control.on("data", (chunk) => {
-  for (const line of chunk.toString().split("\n")) {
+  pending += chunk;
+  let newline;
+  while ((newline = pending.indexOf("\n")) >= 0) {
+    const line = pending.slice(0, newline);
+    pending = pending.slice(newline + 1);
     if (!line) continue;
     const message = JSON.parse(line);
     if (message.type === "authenticated") {
