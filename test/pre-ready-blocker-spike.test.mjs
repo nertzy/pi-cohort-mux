@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { createFakeScheduler, createMachine } from "./fixtures/lifecycle/state-machine.mjs";
 import { createJsonlFrameBuffer } from "./fixtures/startup-blocker/jsonl-frame-buffer.mjs";
+import { firstPaneDeath } from "./support/tmux-pane-exit.mjs";
 
 const execFile = promisify(execFileCallback);
 const tmuxAvailable = await execFile("tmux", ["-V"]).then(() => true, () => false);
@@ -103,9 +104,10 @@ async function writeFifo(fifo) {
   await execFile("sh", ["-c", "printf release > \"$1\"", "sh", fifo], { timeout: tmuxTimeout });
 }
 
-function waitForPaneExit(server, channel, { deadline = tmuxTimeout, launch = spawn } = {}) {
+function waitForPaneExit(server, channel, { pane, deadline = tmuxTimeout, launch = spawn } = {}) {
   const child = launch("tmux", ["-L", server, "-f", "/dev/null", "wait-for", channel]);
-  return waitForProcess(child, deadline);
+  const hooked = waitForProcess(child, deadline);
+  return pane ? firstPaneDeath({ hooked, waiter: child, server, pane }) : hooked;
 }
 
 test("injected deadline classifies a generic pre-ready blocker without an exit claim", () => {
@@ -132,6 +134,24 @@ test("unsignaled lifecycle waiter rejects at its deadline", async () => {
     waitForPaneExit("unused", "unsignaled", { deadline: 1, launch: () => child }),
     /lifecycle signal did not arrive within 1ms/,
   );
+});
+
+test("pane exit is observed even when the pane-died hook never fires", { skip: !tmuxAvailable && "tmux is unavailable" }, async () => {
+  const server = `pre-ready-missed-hook-${process.pid}-${Date.now()}`;
+  try {
+    await tmux(server, "new-session", "-d", "-s", "missed-hook", "cat");
+    await tmux(server, "set-option", "-w", "-g", "remain-on-exit", "on");
+    // No pane-died hook: nothing will ever signal this channel.
+    const { stdout } = await tmux(server, "new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "missed-hook", "cat");
+    const paneId = stdout.trim();
+    const observed = waitForPaneExit(server, `never-signaled-${paneId}`, { pane: paneId });
+    await tmux(server, "respawn-pane", "-k", "-t", paneId, "sh", "-c", "exit 7");
+    await observed;
+    const { stdout: status } = await tmux(server, "display-message", "-p", "-t", paneId, "#{pane_dead} #{pane_dead_status}");
+    assert.equal(status.trim(), "1 7");
+  } finally {
+    await tmux(server, "kill-server").catch(() => {});
+  }
 });
 
 test("control readiness rejects at its deadline", async () => {
@@ -229,7 +249,7 @@ test("real tmux lifecycle hook retains a blocked pane, recovers on control ready
     dispatch(machine, frame.type);
     assert.equal(machine.snapshot().phase, "running");
 
-    const observedExit = waitForPaneExit(server, `${channelPrefix}-${paneId}`);
+    const observedExit = waitForPaneExit(server, `${channelPrefix}-${paneId}`, { pane: paneId });
     await control.shutdown({ split: true });
     await observedExit;
     const { stdout: cleanExit } = await tmux(server, "display-message", "-p", "-t", pane, "#{pane_dead} #{pane_dead_status}");
@@ -238,7 +258,7 @@ test("real tmux lifecycle hook retains a blocked pane, recovers on control ready
     const { stdout: exitPaneIdOutput } = await tmux(server, "new-window", "-d", "-P", "-F", "#{pane_id}", "-t", session, "-n", "exit-before-ready", "cat");
     const exitPaneId = exitPaneIdOutput.trim();
     const exitPane = `${session}:1.0`;
-    const observedFailure = waitForPaneExit(server, `${channelPrefix}-${exitPaneId}`);
+    const observedFailure = waitForPaneExit(server, `${channelPrefix}-${exitPaneId}`, { pane: exitPaneId });
     await tmux(server, "respawn-pane", "-k", "-t", exitPane, process.execPath, launcher, "--exit-before-ready", "23");
     await observedFailure;
     const { stdout } = await tmux(server, "display-message", "-p", "-t", exitPane, "#{pane_dead_status}");

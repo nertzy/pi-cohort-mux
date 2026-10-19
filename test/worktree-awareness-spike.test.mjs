@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { firstPaneDeath } from "./support/tmux-pane-exit.mjs";
 
 const execFile = promisify(execFileCallback);
 const tmuxAvailable = await execFile("tmux", ["-V"]).then(() => true, () => false);
@@ -33,8 +34,9 @@ function waitForProcess(child) {
   });
 }
 
-function waitForPaneExit(server, channel) {
-  return waitForProcess(spawn("tmux", ["-L", server, "-f", "/dev/null", "wait-for", channel]));
+function waitForPaneExit(server, channel, pane) {
+  const waiter = spawn("tmux", ["-L", server, "-f", "/dev/null", "wait-for", channel]);
+  return firstPaneDeath({ hooked: waitForProcess(waiter), waiter, server, pane });
 }
 
 async function resultSocket(socketPath, expected) {
@@ -115,7 +117,7 @@ async function launchReporter({ server, session, cwd, socketPath, metadata }) {
   await tmux(server, "set-hook", "-w", "-t", `${session}:0`, "pane-died", `run-shell -b 'tmux -L ${server} -f /dev/null wait-for -S ${channel}-#{pane_id}'`);
   const { stdout } = await tmux(server, "display-message", "-p", "-t", `${session}:0.0`, "#{pane_id}");
   const paneId = stdout.trim();
-  const exited = waitForPaneExit(server, `${channel}-${paneId}`);
+  const exited = waitForPaneExit(server, `${channel}-${paneId}`, paneId);
   const metadataBase64 = metadata ? Buffer.from(JSON.stringify(metadata)).toString("base64url") : "";
   await tmux(server, "respawn-pane", "-k", "-t", `${session}:0.0`, "-c", cwd, process.execPath, reporter, socketPath, metadataBase64);
   await exited;
