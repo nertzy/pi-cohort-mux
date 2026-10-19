@@ -22,7 +22,9 @@ import { writeFile } from "node:fs/promises";
 const [outputFile, sentinelValue] = process.argv.slice(2);
 
 if (!outputFile || sentinelValue === undefined) {
-  process.stderr.write("usage: sentinel-writer.mjs <outputFile> <sentinelValue>\n");
+  process.stderr.write(
+    "usage: sentinel-writer.mjs <outputFile> <sentinelValue>\n",
+  );
   process.exit(2);
 }
 
@@ -47,6 +49,8 @@ try {
   await writeFile(outputFile, JSON.stringify(evidence), "utf8");
   process.exit(0);
 } catch (error) {
-  process.stderr.write(`sentinel-writer: could not write evidence: ${error.message}\n`);
+  process.stderr.write(
+    `sentinel-writer: could not write evidence: ${error.message}\n`,
+  );
   process.exit(1);
 }

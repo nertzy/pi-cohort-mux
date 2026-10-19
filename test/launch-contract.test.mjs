@@ -50,12 +50,14 @@ function snapshot() {
     workspace_ref: WORKSPACE_REF,
     pane_id: "pane-id",
     pane_ref: "pane:1",
-    surfaces: [{
-      id: SURFACE_ID,
-      ref: "surface:1",
-      title: "child",
-      type: "terminal",
-    }],
+    surfaces: [
+      {
+        id: SURFACE_ID,
+        ref: "surface:1",
+        title: "child",
+        type: "terminal",
+      },
+    ],
   };
 }
 
@@ -71,7 +73,11 @@ test("hands the requested environment through a child-side bootstrap reading an 
       launchedOptions = options;
 
       // --env-file must NOT appear in createArgs (bootstrap reads the FIFO itself)
-      assert.equal(args.includes("--env-file"), false, "--env-file must not appear in new-pane args");
+      assert.equal(
+        args.includes("--env-file"),
+        false,
+        "--env-file must not appear in new-pane args",
+      );
 
       // The bootstrap command is in --command
       const cmdIdx = args.indexOf("--command");
@@ -85,7 +91,7 @@ test("hands the requested environment through a child-side bootstrap reading an 
       );
 
       // Extract the FIFO path from the command string (single-quoted token ending in /environment.fifo)
-      const fifoMatch = commandStr.match(/'([^']+\/environment\.fifo)'/)
+      const fifoMatch = commandStr.match(/'([^']+\/environment\.fifo)'/);
       assert.ok(fifoMatch, "FIFO path must appear in the command string");
       fifoPipePath = fifoMatch[1];
 
@@ -95,8 +101,16 @@ test("hands the requested environment through a child-side bootstrap reading an 
       assert.equal(stats.mode & 0o777, 0o600, "pipe must be mode 0600");
 
       // Secret must not appear in args or options
-      assert.equal(JSON.stringify(args).includes(secret), false, "secret must not appear in args");
-      assert.equal(JSON.stringify(options).includes(secret), false, "secret must not appear in options");
+      assert.equal(
+        JSON.stringify(args).includes(secret),
+        false,
+        "secret must not appear in args",
+      );
+      assert.equal(
+        JSON.stringify(options).includes(secret),
+        false,
+        "secret must not appear in options",
+      );
 
       // Read from the FIFO so the background tee writer can complete
       environmentPayload = await readFile(fifoPipePath, "utf8");
@@ -112,12 +126,14 @@ test("hands the requested environment through a child-side bootstrap reading an 
     spawn: () => new FakeEventsChild(),
   });
 
-  const lease = await backend.launch(request({
-    environment: {
-      PI_COHORT_CHILD_HOST_CONFIG: "/tmp/host-config.json",
-      TEST_ONLY_TOKEN: secret,
-    },
-  }));
+  const lease = await backend.launch(
+    request({
+      environment: {
+        PI_COHORT_CHILD_HOST_CONFIG: "/tmp/host-config.json",
+        TEST_ONLY_TOKEN: secret,
+      },
+    }),
+  );
   await lease.release();
 
   assert.equal(

@@ -12,7 +12,10 @@
  * bootstrap script never leaves a blocked tee process hanging.
  */
 import assert from "node:assert/strict";
-import { execFile as execFileCallback, spawn as spawnProcess } from "node:child_process";
+import {
+  execFile as execFileCallback,
+  spawn as spawnProcess,
+} from "node:child_process";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +24,9 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 const execFile = promisify(execFileCallback);
-const BOOTSTRAP_PATH = fileURLToPath(new URL("../packages/pi-cohort-mux/src/env-bootstrap.sh", import.meta.url));
+const BOOTSTRAP_PATH = fileURLToPath(
+  new URL("../packages/pi-cohort-mux/src/env-bootstrap.sh", import.meta.url),
+);
 
 /**
  * Start a background tee writer: sends payload to fifoPath.
@@ -40,7 +45,8 @@ function writeFifo(fifoPath, payload) {
   return {
     done,
     abort() {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGKILL");
     },
   };
 }
@@ -72,7 +78,11 @@ test("env-bootstrap: reads PROBE_KEY from FIFO and execs node with it set", asyn
       "process.exit(process.env.PROBE_KEY === 'probe-value' ? 0 : 1)",
     ]);
 
-    assert.equal(exitCode, 0, "bootstrap should exec node with PROBE_KEY set to probe-value");
+    assert.equal(
+      exitCode,
+      0,
+      "bootstrap should exec node with PROBE_KEY set to probe-value",
+    );
   } finally {
     writer?.abort();
     await writer?.done;
@@ -96,7 +106,11 @@ test("env-bootstrap: preserves embedded = in values", async () => {
       "process.exit(process.env.ENCODED === 'base64=data=here' ? 0 : 1)",
     ]);
 
-    assert.equal(exitCode, 0, "bootstrap should preserve embedded = characters in values");
+    assert.equal(
+      exitCode,
+      0,
+      "bootstrap should preserve embedded = characters in values",
+    );
   } finally {
     writer?.abort();
     await writer?.done;
@@ -120,7 +134,11 @@ test("env-bootstrap: multiple env vars are all set in the exec'd process", async
       "process.exit(process.env.VAR_A === 'val-a' && process.env.VAR_B === 'val-b' ? 0 : 1)",
     ]);
 
-    assert.equal(exitCode, 0, "bootstrap should export all KEY=VALUE lines from the FIFO");
+    assert.equal(
+      exitCode,
+      0,
+      "bootstrap should export all KEY=VALUE lines from the FIFO",
+    );
   } finally {
     writer?.abort();
     await writer?.done;
@@ -136,7 +154,11 @@ test("env-bootstrap: empty FIFO path skips injection and execs the command direc
     "-e",
     "process.exit(0)",
   ]);
-  assert.equal(exitCode, 0, "bootstrap should exec command without injection when FIFO path is empty");
+  assert.equal(
+    exitCode,
+    0,
+    "bootstrap should exec command without injection when FIFO path is empty",
+  );
 });
 
 test("env-bootstrap: a missing FIFO fails closed instead of running the command without its environment", async () => {
@@ -172,7 +194,11 @@ test("env-bootstrap: values with spaces are preserved", async () => {
       "process.exit(process.env.GREETING === 'hello world' ? 0 : 1)",
     ]);
 
-    assert.equal(exitCode, 0, "bootstrap should preserve space characters in values");
+    assert.equal(
+      exitCode,
+      0,
+      "bootstrap should preserve space characters in values",
+    );
   } finally {
     writer?.abort();
     await writer?.done;
@@ -200,8 +226,7 @@ function makeCollisionTest(varName, subsequentVar = "OTHER") {
       const payload = `${varName}=intended-value\n${subsequentVar}=sentinel\n`;
       writer = writeFifo(fifoPath, payload);
 
-      const assertion =
-        `process.exit(process.env[${JSON.stringify(varName)}] === 'intended-value' ? 0 : 1)`;
+      const assertion = `process.exit(process.env[${JSON.stringify(varName)}] === 'intended-value' ? 0 : 1)`;
 
       const exitCode = await runBootstrap([
         fifoPath,
@@ -224,34 +249,54 @@ function makeCollisionTest(varName, subsequentVar = "OTHER") {
 }
 
 // Original bootstrap loop variable names — bug in export-based implementation.
-test("env-bootstrap: env var named 'key' gets correct value when not last entry",
-  makeCollisionTest("key"));
-test("env-bootstrap: env var named 'val' gets correct value when not last entry",
-  makeCollisionTest("val"));
-test("env-bootstrap: env var named 'line' gets correct value when not last entry",
-  makeCollisionTest("line"));
+test(
+  "env-bootstrap: env var named 'key' gets correct value when not last entry",
+  makeCollisionTest("key"),
+);
+test(
+  "env-bootstrap: env var named 'val' gets correct value when not last entry",
+  makeCollisionTest("val"),
+);
+test(
+  "env-bootstrap: env var named 'line' gets correct value when not last entry",
+  makeCollisionTest("line"),
+);
 
 // FIFO-path variable name in the original bootstrap.
-test("env-bootstrap: env var named 'fifo' gets correct value when not last entry",
-  makeCollisionTest("fifo"));
+test(
+  "env-bootstrap: env var named 'fifo' gets correct value when not last entry",
+  makeCollisionTest("fifo"),
+);
 
 // Proposed-rename internal variable names (_bs_* prefix).
 // A rename-only fix would expose these names to the same bug.
-test("env-bootstrap: env var named '_bs_key' gets correct value when not last entry",
-  makeCollisionTest("_bs_key"));
-test("env-bootstrap: env var named '_bs_val' gets correct value when not last entry",
-  makeCollisionTest("_bs_val"));
-test("env-bootstrap: env var named '_bs_line' gets correct value when not last entry",
-  makeCollisionTest("_bs_line"));
-test("env-bootstrap: env var named '_bs_fifo' gets correct value when not last entry",
-  makeCollisionTest("_bs_fifo"));
+test(
+  "env-bootstrap: env var named '_bs_key' gets correct value when not last entry",
+  makeCollisionTest("_bs_key"),
+);
+test(
+  "env-bootstrap: env var named '_bs_val' gets correct value when not last entry",
+  makeCollisionTest("_bs_val"),
+);
+test(
+  "env-bootstrap: env var named '_bs_line' gets correct value when not last entry",
+  makeCollisionTest("_bs_line"),
+);
+test(
+  "env-bootstrap: env var named '_bs_fifo' gets correct value when not last entry",
+  makeCollisionTest("_bs_fifo"),
+);
 
 // Shell specials: must survive with correct values regardless of loop behavior.
-test("env-bootstrap: IFS survives correctly when followed by another env var",
-  makeCollisionTest("IFS", "PROBE"));
+test(
+  "env-bootstrap: IFS survives correctly when followed by another env var",
+  makeCollisionTest("IFS", "PROBE"),
+);
 
-test("env-bootstrap: PATH survives correctly when followed by another env var",
-  makeCollisionTest("PATH", "PROBE"));
+test(
+  "env-bootstrap: PATH survives correctly when followed by another env var",
+  makeCollisionTest("PATH", "PROBE"),
+);
 
 // ─── No-argv proof ────────────────────────────────────────────────────────────
 //
@@ -274,23 +319,27 @@ test("env-bootstrap: never invokes env(1) with KEY=VALUE argv (process-level pro
 
     // Canary env: write sentinel and exit 1 if called with any KEY=VALUE arg.
     // If never invoked with assignment argv, the sentinel is never created.
-    const fakeEnvScript = [
-      "#!/bin/sh",
-      `SENTINEL='${sentinelPath}'`,
-      "for arg; do",
-      "  case \"$arg\" in",
-      "    [A-Za-z_]*=*) touch \"$SENTINEL\"; exit 1;;",
-      "  esac",
-      "done",
-      "/usr/bin/env \"$@\"",
-    ].join("\n") + "\n";
+    const fakeEnvScript =
+      [
+        "#!/bin/sh",
+        `SENTINEL='${sentinelPath}'`,
+        "for arg; do",
+        '  case "$arg" in',
+        '    [A-Za-z_]*=*) touch "$SENTINEL"; exit 1;;',
+        "  esac",
+        "done",
+        '/usr/bin/env "$@"',
+      ].join("\n") + "\n";
     await writeFile(fakeEnvPath, fakeEnvScript, { mode: 0o755 });
 
     writer = writeFifo(fifoPath, "SECRET_KEY=secret-value\n");
 
     // Run bootstrap with canary env prepended to PATH.
     const exitCode = await new Promise((resolve, reject) => {
-      const childEnv = { ...process.env, PATH: `${tmpDir}:${process.env.PATH ?? "/usr/bin:/bin"}` };
+      const childEnv = {
+        ...process.env,
+        PATH: `${tmpDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      };
       const proc = spawnProcess(
         "/bin/sh",
         [
@@ -307,7 +356,11 @@ test("env-bootstrap: never invokes env(1) with KEY=VALUE argv (process-level pro
     });
 
     // Bootstrap must succeed — the real command ran with the env var set.
-    assert.equal(exitCode, 0, "bootstrap should exec command successfully with env var set via export");
+    assert.equal(
+      exitCode,
+      0,
+      "bootstrap should exec command successfully with env var set via export",
+    );
 
     // Sentinel must not exist — env(1) was never called with KEY=VALUE argv.
     let sentinelExists = false;
@@ -351,7 +404,11 @@ test("env-bootstrap: executable path containing '=' is handled correctly", async
 
     const exitCode = await runBootstrap([fifoPath, "/bin/sh", scriptPath]);
 
-    assert.equal(exitCode, 0, "bootstrap should exec a script whose path contains '='");
+    assert.equal(
+      exitCode,
+      0,
+      "bootstrap should exec a script whose path contains '='",
+    );
   } finally {
     writer?.abort();
     await writer?.done;

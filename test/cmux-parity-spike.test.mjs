@@ -35,7 +35,8 @@ async function probeCmux() {
     const { stdout: version } = await cmux("--version");
     const { stdout: capabilitiesJson } = await cmux("capabilities");
     const capabilities = JSON.parse(capabilitiesJson);
-    const available = Boolean(process.env.CMUX_WORKSPACE_ID) &&
+    const available =
+      Boolean(process.env.CMUX_WORKSPACE_ID) &&
       Boolean(process.env.CMUX_SOCKET_PATH) &&
       capabilities.capabilities?.includes("events.v1");
     return { available, version: version.trim(), capabilities };
@@ -45,8 +46,9 @@ async function probeCmux() {
 }
 
 const probe = await probeCmux();
-const skip = probe.available ? false :
-  `real public cmux is unreachable from this session (events.v1/CMUX_WORKSPACE_ID prerequisite missing): ${probe.error?.message ?? "not inside a cmux session"}`;
+const skip = probe.available
+  ? false
+  : `real public cmux is unreachable from this session (events.v1/CMUX_WORKSPACE_ID prerequisite missing): ${probe.error?.message ?? "not inside a cmux session"}`;
 
 function subscribe(names) {
   const args = ["events", "--no-heartbeat"];
@@ -54,10 +56,15 @@ function subscribe(names) {
   const child = spawn("cmux", args, { stdio: ["ignore", "pipe", "pipe"] });
   let resolveAck;
   let rejectAck;
-  const ack = new Promise((resolve, reject) => { resolveAck = resolve; rejectAck = reject; });
+  const ack = new Promise((resolve, reject) => {
+    resolveAck = resolve;
+    rejectAck = reject;
+  });
   let exited = false;
   let resolveExit;
-  const exit = new Promise((resolve) => { resolveExit = resolve; });
+  const exit = new Promise((resolve) => {
+    resolveExit = resolve;
+  });
   const facts = [];
   const waiters = new Set();
   let buffer = "";
@@ -92,11 +99,16 @@ function subscribe(names) {
     exited = true;
     resolveExit();
     if (code !== 0 && signal !== "SIGTERM") {
-      failure(new Error(`cmux events exited with code ${code}, signal ${signal}`));
+      failure(
+        new Error(`cmux events exited with code ${code}, signal ${signal}`),
+      );
     }
   });
   return {
-    ack: withDeadline(ack, `cmux events (${names.join(",")}) did not acknowledge within ${cliDeadline}ms`),
+    ack: withDeadline(
+      ack,
+      `cmux events (${names.join(",")}) did not acknowledge within ${cliDeadline}ms`,
+    ),
     facts,
     waitFor(predicate, description, deadline = cliDeadline) {
       const existing = facts.find(predicate);
@@ -125,14 +137,22 @@ async function startReporter(directory) {
   let resolveReady;
   let rejectReady;
   let resolveClosed;
-  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
-  const closed = new Promise((resolve) => { resolveClosed = resolve; });
+  const ready = new Promise((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  const closed = new Promise((resolve) => {
+    resolveClosed = resolve;
+  });
   let buffer = "";
   const server = net.createServer((client) => {
     connection = client;
     client.setEncoding("utf8");
     client.once("error", rejectReady);
-    client.once("close", () => { resolveClosed(); rejectReady(new Error("reporter connection closed before ready")); });
+    client.once("close", () => {
+      resolveClosed();
+      rejectReady(new Error("reporter connection closed before ready"));
+    });
     client.on("data", (chunk) => {
       buffer += chunk;
       let newline;
@@ -146,21 +166,36 @@ async function startReporter(directory) {
       }
     });
   });
-  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
   await chmod(socketPath, 0o600);
   return {
     socketPath,
     waitUntilReady() {
-      return withDeadline(ready, `reporter ready did not arrive within ${cliDeadline}ms`);
+      return withDeadline(
+        ready,
+        `reporter ready did not arrive within ${cliDeadline}ms`,
+      );
     },
     async shutdown() {
-      const ack = withDeadline(new Promise((resolve, reject) => {
-        if (!connection) return reject(new Error("reporter never connected"));
-        connection.__shutdownAck = resolve;
-        connection.write(`${JSON.stringify({ type: "shutdown" })}\n`, (error) => error && reject(error));
-      }), `shutdown-ack did not arrive within ${cliDeadline}ms`);
+      const ack = withDeadline(
+        new Promise((resolve, reject) => {
+          if (!connection) return reject(new Error("reporter never connected"));
+          connection.__shutdownAck = resolve;
+          connection.write(
+            `${JSON.stringify({ type: "shutdown" })}\n`,
+            (error) => error && reject(error),
+          );
+        }),
+        `shutdown-ack did not arrive within ${cliDeadline}ms`,
+      );
       await ack;
-      await withDeadline(closed, `reporter socket did not close within ${cliDeadline}ms`);
+      await withDeadline(
+        closed,
+        `reporter socket did not close within ${cliDeadline}ms`,
+      );
     },
     async close() {
       connection?.destroy();
@@ -173,7 +208,18 @@ async function startReporter(directory) {
 // a snapshot succeeds so later steps never race workspace registration. The
 // ref joins `owned` the moment cmux prints it, so a failed wait still cleans up.
 async function createWorkspace({ name, cwd, command, owned }) {
-  const { stdout } = await cmux("workspace", "create", "--name", name, "--cwd", cwd, "--focus", "false", "--command", command);
+  const { stdout } = await cmux(
+    "workspace",
+    "create",
+    "--name",
+    name,
+    "--cwd",
+    cwd,
+    "--focus",
+    "false",
+    "--command",
+    command,
+  );
   assert.match(stdout.trim(), /^OK workspace:\d+$/);
   const workspaceRef = stdout.trim().split(" ")[1];
   const state = { resolved: false };
@@ -206,7 +252,10 @@ async function closeOwnedWorkspace(workspaceRef, { resolved }) {
       if (!isGone(error)) throw error;
       if (resolved) return;
     }
-    if (Date.now() >= end) throw new Error(`owned workspace never resolved for close; it may appear later: ${workspaceRef}`);
+    if (Date.now() >= end)
+      throw new Error(
+        `owned workspace never resolved for close; it may appear later: ${workspaceRef}`,
+      );
     await new Promise((resolve) => setTimeout(resolve, disappearancePoll));
   }
 }
@@ -217,7 +266,18 @@ function isGone(error) {
 }
 
 async function snapshot(workspaceRef) {
-  const { stdout } = await execFile("cmux", ["--id-format", "both", "list-pane-surfaces", "--workspace", workspaceRef, "--json"], { timeout: cliDeadline });
+  const { stdout } = await execFile(
+    "cmux",
+    [
+      "--id-format",
+      "both",
+      "list-pane-surfaces",
+      "--workspace",
+      workspaceRef,
+      "--json",
+    ],
+    { timeout: cliDeadline },
+  );
   return JSON.parse(stdout);
 }
 
@@ -231,13 +291,17 @@ async function waitUntilSnapshotGone(workspaceRef) {
       throw error;
     }
     if (Date.now() >= end) {
-      throw new Error(`workspace remained in snapshots after close: ${workspaceRef}`);
+      throw new Error(
+        `workspace remained in snapshots after close: ${workspaceRef}`,
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, disappearancePoll));
   }
 }
 
-test("real public cmux backend proves workspace/surface lifecycle parity end to end", { skip }, async (t) => {
+test("real public cmux backend proves workspace/surface lifecycle parity end to end", {
+  skip,
+}, async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "cmux-parity-"));
   const expectedCwd = await realpath(directory);
   const suffix = `${process.pid}-${Date.now()}`;
@@ -250,24 +314,43 @@ test("real public cmux backend proves workspace/surface lifecycle parity end to 
   let failure;
   try {
     reporter = await startReporter(directory);
-    events = subscribe(["workspace.created", "surface.created", "surface.closed", "pane.closed", "workspace.closed"]);
+    events = subscribe([
+      "workspace.created",
+      "surface.created",
+      "surface.closed",
+      "pane.closed",
+      "workspace.closed",
+    ]);
     await events.ack;
     const { stdout: callerBefore } = await cmux("current-workspace");
 
-    decoyRef = await createWorkspace({ name: `cmux-decoy-${suffix}`, cwd: directory, command: quoteShell("true"), owned });
+    decoyRef = await createWorkspace({
+      name: `cmux-decoy-${suffix}`,
+      cwd: directory,
+      command: quoteShell("true"),
+      owned,
+    });
     decoy = await snapshot(decoyRef);
     await events.waitFor(
-      (fact) => fact.name === "workspace.created" && fact.workspace_id === decoy.workspace_id,
+      (fact) =>
+        fact.name === "workspace.created" &&
+        fact.workspace_id === decoy.workspace_id,
       "decoy workspace.created",
     );
     workspaceRef = await createWorkspace({
       name: `cmux-parity-${suffix}`,
       cwd: directory,
-      command: [process.execPath, reporterPath, reporter.socketPath].map(quoteShell).join(" "),
+      command: [process.execPath, reporterPath, reporter.socketPath]
+        .map(quoteShell)
+        .join(" "),
       owned,
     });
     const { stdout: callerAfter } = await cmux("current-workspace");
-    assert.equal(callerAfter.trim(), callerBefore.trim(), "--focus false must not move caller focus");
+    assert.equal(
+      callerAfter.trim(),
+      callerBefore.trim(),
+      "--focus false must not move caller focus",
+    );
 
     // Start the deadline after workspace creation; setup time must not consume
     // the child's full connection window.
@@ -275,18 +358,53 @@ test("real public cmux backend proves workspace/surface lifecycle parity end to 
     assert.equal(ready.cwd, expectedCwd);
     assert.ok(ready.workspaceId);
     assert.ok(ready.surfaceId);
-    const createdWorkspace = await events.waitFor((fact) => fact.name === "workspace.created" && fact.workspace_id === ready.workspaceId, "reporter workspace.created");
-    const createdSurface = await events.waitFor((fact) => fact.name === "surface.created" && fact.surface_id === ready.surfaceId, "reporter surface.created");
+    const createdWorkspace = await events.waitFor(
+      (fact) =>
+        fact.name === "workspace.created" &&
+        fact.workspace_id === ready.workspaceId,
+      "reporter workspace.created",
+    );
+    const createdSurface = await events.waitFor(
+      (fact) =>
+        fact.name === "surface.created" && fact.surface_id === ready.surfaceId,
+      "reporter surface.created",
+    );
     assert.equal(createdWorkspace.workspace_id, ready.workspaceId);
     assert.equal(createdSurface.surface_id, ready.surfaceId);
 
     const surfaces = await snapshot(workspaceRef);
-    const surface = surfaces.surfaces.find((entry) => entry.id === ready.surfaceId);
+    const surface = surfaces.surfaces.find(
+      (entry) => entry.id === ready.surfaceId,
+    );
     assert.ok(surface);
-    const handle = { workspaceId: surfaces.workspace_id, workspaceRef: surfaces.workspace_ref, paneId: surfaces.pane_id, paneRef: surfaces.pane_ref, surfaceId: surface.id, surfaceRef: surface.ref, title: surface.title, type: surface.type, cwd: expectedCwd };
-    assert.deepEqual(Object.keys(handle).sort(), ["cwd", "paneId", "paneRef", "surfaceId", "surfaceRef", "title", "type", "workspaceId", "workspaceRef"]);
+    const handle = {
+      workspaceId: surfaces.workspace_id,
+      workspaceRef: surfaces.workspace_ref,
+      paneId: surfaces.pane_id,
+      paneRef: surfaces.pane_ref,
+      surfaceId: surface.id,
+      surfaceRef: surface.ref,
+      title: surface.title,
+      type: surface.type,
+      cwd: expectedCwd,
+    };
+    assert.deepEqual(Object.keys(handle).sort(), [
+      "cwd",
+      "paneId",
+      "paneRef",
+      "surfaceId",
+      "surfaceRef",
+      "title",
+      "type",
+      "workspaceId",
+      "workspaceRef",
+    ]);
     const reattached = JSON.parse(JSON.stringify(handle));
-    assert.ok((await snapshot(reattached.workspaceRef)).surfaces.some((entry) => entry.id === reattached.surfaceId));
+    assert.ok(
+      (await snapshot(reattached.workspaceRef)).surfaces.some(
+        (entry) => entry.id === reattached.surfaceId,
+      ),
+    );
 
     // This subscription was acknowledged before shutdown. It observes every
     // candidate lifecycle fact in the entire shutdown window, then filters by
@@ -294,8 +412,13 @@ test("real public cmux backend proves workspace/surface lifecycle parity end to 
     await reporter.shutdown();
     await assert.rejects(
       events.waitFor(
-        (fact) => ["surface.closed", "pane.closed", "workspace.closed"].includes(fact.name) &&
-          (fact.surface_id === reattached.surfaceId || fact.workspace_id === reattached.workspaceId || fact.pane_id === reattached.paneId),
+        (fact) =>
+          ["surface.closed", "pane.closed", "workspace.closed"].includes(
+            fact.name,
+          ) &&
+          (fact.surface_id === reattached.surfaceId ||
+            fact.workspace_id === reattached.workspaceId ||
+            fact.pane_id === reattached.paneId),
         "generic reporter exit fact",
         1_500,
       ),
@@ -305,15 +428,21 @@ test("real public cmux backend proves workspace/surface lifecycle parity end to 
     // A decoy close shares this daemon-wide subscription. Its facts are
     // observed but cannot satisfy the reporter UUID predicate below.
     const decoyClose = events.waitFor(
-      (fact) => fact.name === "workspace.closed" && fact.workspace_id === decoy.workspace_id,
+      (fact) =>
+        fact.name === "workspace.closed" &&
+        fact.workspace_id === decoy.workspace_id,
       "decoy workspace.closed",
     );
     const surfaceClose = events.waitFor(
-      (fact) => fact.name === "surface.closed" && fact.surface_id === reattached.surfaceId,
+      (fact) =>
+        fact.name === "surface.closed" &&
+        fact.surface_id === reattached.surfaceId,
       "reporter surface.closed",
     );
     const workspaceClose = events.waitFor(
-      (fact) => fact.name === "workspace.closed" && fact.workspace_id === reattached.workspaceId,
+      (fact) =>
+        fact.name === "workspace.closed" &&
+        fact.workspace_id === reattached.workspaceId,
       "reporter workspace.closed",
     );
     await cmux("workspace", "close", decoyRef);
@@ -328,12 +457,14 @@ test("real public cmux backend proves workspace/surface lifecycle parity end to 
     throw error;
   } finally {
     const leaks = [];
-    for (const [ref, state] of owned) await closeOwnedWorkspace(ref, state).catch((error) => leaks.push(error));
+    for (const [ref, state] of owned)
+      await closeOwnedWorkspace(ref, state).catch((error) => leaks.push(error));
     if (events) await events.stop().catch(() => {});
     if (reporter) await reporter.close();
     await rm(directory, { recursive: true, force: true });
     for (const leak of leaks) t.diagnostic(`cleanup: ${leak.message}`);
-    if (leaks.length && !failure) throw new AggregateError(leaks, "owned cmux workspaces leaked");
+    if (leaks.length && !failure)
+      throw new AggregateError(leaks, "owned cmux workspaces leaked");
   }
 });
 

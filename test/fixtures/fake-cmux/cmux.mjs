@@ -39,7 +39,9 @@ import { readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 
 const VERSION = process.env.FAKE_CMUX_VERSION ?? "cmux 0.64.22";
-const CAPS = (process.env.FAKE_CMUX_CAPABILITIES ?? "events.v1").split(",").filter(Boolean);
+const CAPS = (process.env.FAKE_CMUX_CAPABILITIES ?? "events.v1")
+  .split(",")
+  .filter(Boolean);
 const WS_ID = process.env.FAKE_CMUX_WORKSPACE_ID ?? randomUUID();
 const WS_REF = process.env.FAKE_CMUX_WORKSPACE_REF ?? "workspace:1";
 const SF_ID = process.env.FAKE_CMUX_SURFACE_ID ?? randomUUID();
@@ -47,11 +49,17 @@ const SF_REF = process.env.FAKE_CMUX_SURFACE_REF ?? "surface:1";
 const PN_ID = process.env.FAKE_CMUX_PANE_ID ?? randomUUID();
 const PN_REF = process.env.FAKE_CMUX_PANE_REF ?? "pane:1";
 const NOT_FOUND = process.env.FAKE_CMUX_NOT_FOUND === "1";
-const CLOSE_NOT_FOUND = NOT_FOUND || process.env.FAKE_CMUX_CLOSE_NOT_FOUND === "1";
+const CLOSE_NOT_FOUND =
+  NOT_FOUND || process.env.FAKE_CMUX_CLOSE_NOT_FOUND === "1";
 const PANE_GONE = NOT_FOUND || process.env.FAKE_CMUX_PANE_GONE === "1";
 
-function emit(text) { process.stdout.write(text + "\n"); }
-function fail(message) { process.stderr.write(message + "\n"); process.exit(1); }
+function emit(text) {
+  process.stdout.write(text + "\n");
+}
+function fail(message) {
+  process.stderr.write(message + "\n");
+  process.exit(1);
+}
 
 // Strip leading global flags like --id-format both before subcommand dispatch.
 let cursor = 0;
@@ -92,7 +100,9 @@ switch (subcommand) {
         const frames = JSON.parse(readFileSync(framesFile, "utf8"));
         for (const frame of frames) emit(JSON.stringify(frame));
       } catch (err) {
-        process.stderr.write(`fake-cmux: could not read events frames: ${err.message}\n`);
+        process.stderr.write(
+          `fake-cmux: could not read events frames: ${err.message}\n`,
+        );
       }
     }
 
@@ -107,12 +117,29 @@ switch (subcommand) {
   case "new-surface": {
     let pane, workspace, command;
     for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === "--workspace") { workspace = rest[++i]; continue; }
-      if (rest[i] === "--pane") { pane = rest[++i]; continue; }
-      if (rest[i] === "--command") { command = rest[++i]; continue; }
-      if (rest[i] === "--type" || rest[i] === "--direction" || rest[i] === "--focus") { i++; continue; }
+      if (rest[i] === "--workspace") {
+        workspace = rest[++i];
+        continue;
+      }
+      if (rest[i] === "--pane") {
+        pane = rest[++i];
+        continue;
+      }
+      if (rest[i] === "--command") {
+        command = rest[++i];
+        continue;
+      }
+      if (
+        rest[i] === "--type" ||
+        rest[i] === "--direction" ||
+        rest[i] === "--focus"
+      ) {
+        i++;
+        continue;
+      }
     }
-    if (!workspace || !command) fail(`fake-cmux ${subcommand}: missing required args`);
+    if (!workspace || !command)
+      fail(`fake-cmux ${subcommand}: missing required args`);
     if (subcommand === "new-surface") {
       if (!pane) fail("fake-cmux new-surface: missing --pane");
       if (PANE_GONE) fail(`Error: not_found: Pane ${pane} not found`);
@@ -124,8 +151,14 @@ switch (subcommand) {
   case "close-surface": {
     let surface;
     for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === "--surface") { surface = rest[++i]; continue; }
-      if (rest[i] === "--workspace") { i++; continue; }
+      if (rest[i] === "--surface") {
+        surface = rest[++i];
+        continue;
+      }
+      if (rest[i] === "--workspace") {
+        i++;
+        continue;
+      }
     }
     if (!surface) fail("fake-cmux close-surface: missing --surface");
     if (CLOSE_NOT_FOUND) {
@@ -143,8 +176,15 @@ switch (subcommand) {
     // --id-format both was already consumed above if present.
     let paneScoped = false;
     for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === "--pane") { paneScoped = true; i++; continue; }
-      if (rest[i] === "--workspace" || rest[i] === "--json") { if (rest[i] !== "--json") i++; continue; }
+      if (rest[i] === "--pane") {
+        paneScoped = true;
+        i++;
+        continue;
+      }
+      if (rest[i] === "--workspace" || rest[i] === "--json") {
+        if (rest[i] !== "--json") i++;
+        continue;
+      }
     }
     if (NOT_FOUND || (paneScoped && PANE_GONE)) {
       fail("Error: not_found: Pane or workspace not found");
@@ -170,5 +210,7 @@ switch (subcommand) {
   }
 
   default:
-    fail(`fake-cmux: unknown subcommand: ${subcommand} (args: ${args.join(" ")})`);
+    fail(
+      `fake-cmux: unknown subcommand: ${subcommand} (args: ${args.join(" ")})`,
+    );
 }

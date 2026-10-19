@@ -39,7 +39,10 @@
  * SPI transport, so launch rejects it instead of silently dropping it — loud
  * rejection is safer than undefined behavior.
  */
-import { execFile as execFileCallback, spawn as spawnProcess } from "node:child_process";
+import {
+  execFile as execFileCallback,
+  spawn as spawnProcess,
+} from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, readFile, rm } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -61,7 +64,9 @@ const HANDOFF_DEADLINE_MS = 10_000;
 const ORPHAN_GRACE_MS = 3_000;
 const COOLDOWN_MS = 60_000;
 const BOOTSTRAP_PATH = environmentBootstrapPath;
-const LAUNCHER_PATH = fileURLToPath(new URL("./surface-launch.sh", import.meta.url));
+const LAUNCHER_PATH = fileURLToPath(
+  new URL("./surface-launch.sh", import.meta.url),
+);
 
 // ─── Shell-safe command building ──────────────────────────────────────────────
 
@@ -89,7 +94,9 @@ function buildCommand(command, args) {
  */
 function isNotFound(error) {
   const text = (error?.message ?? "") + (error?.stderr ?? "");
-  return /\bnot_found\b|\b(?:workspace|pane|surface) ref not found\b/i.test(text);
+  return /\bnot_found\b|\b(?:workspace|pane|surface) ref not found\b/i.test(
+    text,
+  );
 }
 
 /** True when execFile killed cmux at its deadline (cmux never answered). */
@@ -108,7 +115,11 @@ function isAbort(error) {
  * could not parse. An error cmux itself reported means nothing was created.
  */
 function createOutcomeUnknown(error) {
-  return isCliTimeout(error) || isAbort(error) || error?.unexpectedCreateOutput === true;
+  return (
+    isCliTimeout(error) ||
+    isAbort(error) ||
+    error?.unexpectedCreateOutput === true
+  );
 }
 
 /**
@@ -121,7 +132,13 @@ async function resolveExecutable(name) {
   for (const directory of (process.env.PATH ?? "").split(delimiter)) {
     if (!isAbsolute(directory)) continue;
     const candidate = join(directory, name);
-    if (await access(candidate, fsConstants.X_OK).then(() => true, () => false)) return candidate;
+    if (
+      await access(candidate, fsConstants.X_OK).then(
+        () => true,
+        () => false,
+      )
+    )
+      return candidate;
   }
   return name;
 }
@@ -151,9 +168,16 @@ function parseCreateRefs(output) {
   const pane = text.match(/(?:^|\s)(pane:\d+)(?:\s|$)/);
   const workspace = text.match(/(?:^|\s)(workspace:\d+)(?:\s|$)/);
   if (!surface || !workspace) {
-    throw Object.assign(new Error(`Unexpected cmux create output: ${JSON.stringify(text)}`), { unexpectedCreateOutput: true });
+    throw Object.assign(
+      new Error(`Unexpected cmux create output: ${JSON.stringify(text)}`),
+      { unexpectedCreateOutput: true },
+    );
   }
-  return { surfaceRef: surface[1], paneRef: pane?.[1] ?? null, workspaceRef: workspace[1] };
+  return {
+    surfaceRef: surface[1],
+    paneRef: pane?.[1] ?? null,
+    workspaceRef: workspace[1],
+  };
 }
 
 /** Parse "OK pane:M" from list/create output that carries no surface. */
@@ -171,13 +195,27 @@ function parsePaneRef(output) {
  * the surface is ours, so there is no one else to confirm with.
  */
 function closeSurfaceArgs(workspaceRef, surfaceRef) {
-  return ["close-surface", "--workspace", workspaceRef, "--surface", surfaceRef, "--force"];
+  return [
+    "close-surface",
+    "--workspace",
+    workspaceRef,
+    "--surface",
+    surfaceRef,
+    "--force",
+  ];
 }
 
 // ─── Snapshot (list-pane-surfaces) ───────────────────────────────────────────
 
 async function takeSnapshot(execFileFn, cli, workspaceRef, paneRef) {
-  const args = ["--id-format", "both", "list-pane-surfaces", "--workspace", workspaceRef, "--json"];
+  const args = [
+    "--id-format",
+    "both",
+    "list-pane-surfaces",
+    "--workspace",
+    workspaceRef,
+    "--json",
+  ];
   if (paneRef) args.push("--pane", paneRef);
   const { stdout } = await execFileFn(cli, args, { timeout: CLI_DEADLINE_MS });
   return JSON.parse(stdout);
@@ -229,7 +267,9 @@ function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
   let stopping = false;
   let terminalError = null;
   let resolveExit;
-  const exitPromise = new Promise((resolve) => { resolveExit = resolve; });
+  const exitPromise = new Promise((resolve) => {
+    resolveExit = resolve;
+  });
 
   let buffer = "";
   // Frames arriving before the first onFrame listener are buffered.
@@ -245,7 +285,11 @@ function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
       buffer = buffer.slice(newline + 1);
       if (!line) continue;
       let frame;
-      try { frame = JSON.parse(line); } catch { continue; }
+      try {
+        frame = JSON.parse(line);
+      } catch {
+        continue;
+      }
       if (frame.type === "ack") {
         resolveAck(frame);
       } else if (frameListener) {
@@ -276,24 +320,41 @@ function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
     else failure(error);
   });
   child.once("close", (code, signal) => {
-    terminated(new Error(`cmux events ended unexpectedly with code ${code}, signal ${signal}`));
+    terminated(
+      new Error(
+        `cmux events ended unexpectedly with code ${code}, signal ${signal}`,
+      ),
+    );
   });
 
-  const timer = setTimeout(() => rejectAck(new Error("cmux events ack timed out")), deadline);
+  const timer = setTimeout(
+    () => rejectAck(new Error("cmux events ack timed out")),
+    deadline,
+  );
 
   return {
     ack: ackPromise.then(
-      (frame) => { clearTimeout(timer); return frame; },
-      (err) => { clearTimeout(timer); throw err; },
+      (frame) => {
+        clearTimeout(timer);
+        return frame;
+      },
+      (err) => {
+        clearTimeout(timer);
+        throw err;
+      },
     ),
     onFrame(listener) {
       frameListener = listener;
       for (const frame of frameBuffer.splice(0)) listener(frame);
       if (terminalError) listener(null, terminalError);
-      return () => { if (frameListener === listener) frameListener = null; };
+      return () => {
+        if (frameListener === listener) frameListener = null;
+      };
     },
     /** True once the stream has ended on its own; observation is gone. */
-    get ended() { return terminalError !== null; },
+    get ended() {
+      return terminalError !== null;
+    },
     async stop() {
       stopping = true;
       if (!exited) child.kill("SIGTERM");
@@ -311,10 +372,27 @@ function startSubscription(spawnFn, cli, names, deadline = ACK_DEADLINE_MS) {
 function translateCmuxEvent(frame, surface) {
   const name = frame.name;
   const timestamp = Date.now();
-  if (name === "surface.closed" || name === "workspace.closed" || name === "pane.closed") {
-    return { type: "surface_closed", requested: false, source: "mux", timestamp, surface };
+  if (
+    name === "surface.closed" ||
+    name === "workspace.closed" ||
+    name === "pane.closed"
+  ) {
+    return {
+      type: "surface_closed",
+      requested: false,
+      source: "mux",
+      timestamp,
+      surface,
+    };
   }
-  return { type: "unknown", fact: "cmux_event", reason: "unrecognized cmux event", source: "mux", timestamp, surface };
+  return {
+    type: "unknown",
+    fact: "cmux_event",
+    reason: "unrecognized cmux event",
+    source: "mux",
+    timestamp,
+    surface,
+  };
 }
 
 // ─── Public factory ───────────────────────────────────────────────────────────
@@ -378,9 +456,15 @@ export function createCmuxExecutionBackend({
   async function withHelperLock(operation) {
     const previous = helperLock;
     let unlock;
-    helperLock = new Promise((resolve) => { unlock = resolve; });
+    helperLock = new Promise((resolve) => {
+      unlock = resolve;
+    });
     await previous;
-    try { return await operation(); } finally { unlock(); }
+    try {
+      return await operation();
+    } finally {
+      unlock();
+    }
   }
 
   async function createSurface(parentWorkspace, command, signal) {
@@ -411,9 +495,36 @@ export function createCmuxExecutionBackend({
       }
     }
     const createArgs = helper
-      ? ["new-surface", "--workspace", parentWorkspace, "--pane", helper.ref, "--type", "terminal", "--focus", "false", "--command", command]
-      : ["new-pane", "--workspace", parentWorkspace, "--type", "terminal", "--direction", "right", "--focus", "false", "--command", command];
-    const result = await execFileFn(cli, createArgs, { timeout: CLI_DEADLINE_MS, signal });
+      ? [
+          "new-surface",
+          "--workspace",
+          parentWorkspace,
+          "--pane",
+          helper.ref,
+          "--type",
+          "terminal",
+          "--focus",
+          "false",
+          "--command",
+          command,
+        ]
+      : [
+          "new-pane",
+          "--workspace",
+          parentWorkspace,
+          "--type",
+          "terminal",
+          "--direction",
+          "right",
+          "--focus",
+          "false",
+          "--command",
+          command,
+        ];
+    const result = await execFileFn(cli, createArgs, {
+      timeout: CLI_DEADLINE_MS,
+      signal,
+    });
     const refs = parseCreateRefs(result.stdout);
     const paneRef = helper?.ref ?? refs.paneRef;
     // Publish the pane before unlocking so the next launch adds a tab to it.
@@ -440,10 +551,15 @@ export function createCmuxExecutionBackend({
     }
     if (!surfaceId) return error;
     try {
-      await execFileFn(cli, closeSurfaceArgs(parentWorkspace, surfaceId), { timeout: CLI_DEADLINE_MS });
+      await execFileFn(cli, closeSurfaceArgs(parentWorkspace, surfaceId), {
+        timeout: CLI_DEADLINE_MS,
+      });
     } catch (closeError) {
       if (!isNotFound(closeError)) {
-        return new AggregateError([error, closeError], `launch failed and the surface cmux created anyway (${surfaceId}) could not be closed`);
+        return new AggregateError(
+          [error, closeError],
+          `launch failed and the surface cmux created anyway (${surfaceId}) could not be closed`,
+        );
       }
     }
     return error;
@@ -459,10 +575,21 @@ export function createCmuxExecutionBackend({
         environmentPipe.writer.completion,
         new Promise((_, reject) => {
           timer = setTimeout(
-            () => reject(new Error(`environment hand-off did not complete within ${handoffDeadlineMs}ms; the child never opened its FIFO (missing cwd or failed shell?)`)),
+            () =>
+              reject(
+                new Error(
+                  `environment hand-off did not complete within ${handoffDeadlineMs}ms; the child never opened its FIFO (missing cwd or failed shell?)`,
+                ),
+              ),
             handoffDeadlineMs,
           );
-          onAbort = () => reject(signal.reason ?? Object.assign(new Error("launch aborted"), { name: "AbortError" }));
+          onAbort = () =>
+            reject(
+              signal.reason ??
+                Object.assign(new Error("launch aborted"), {
+                  name: "AbortError",
+                }),
+            );
           if (signal?.aborted) onAbort();
           else signal?.addEventListener("abort", onAbort, { once: true });
         }),
@@ -478,22 +605,66 @@ export function createCmuxExecutionBackend({
    * fact as it was observed, then what a new snapshot shows now, then whether
    * live observation still runs. Nothing cached is presented as current.
    */
-  async function reconcileSurface({ lost, surface, workspaceRef, paneRef, surfaceId, subscription }) {
+  async function reconcileSurface({
+    lost,
+    surface,
+    workspaceRef,
+    paneRef,
+    surfaceId,
+    subscription,
+  }) {
     state.reconciles += 1;
-    const fact = (body) => ({ ...body, source: "mux", surface, timestamp: Date.now() });
-    const facts = lost ? [{ ...lost, source: "mux", surface, timestamp: lost.timestamp ?? Date.now() }] : [];
+    const fact = (body) => ({
+      ...body,
+      source: "mux",
+      surface,
+      timestamp: Date.now(),
+    });
+    const facts = lost
+      ? [
+          {
+            ...lost,
+            source: "mux",
+            surface,
+            timestamp: lost.timestamp ?? Date.now(),
+          },
+        ]
+      : [];
     try {
-      const snapshot = await takeSnapshot(execFileFn, cli, workspaceRef, paneRef);
-      facts.push(snapshot.surfaces?.some((s) => s.id === surfaceId)
-        ? fact({ type: "unknown", fact: "snapshot", reason: "surface present in a fresh cmux snapshot", snapshot: true })
-        : fact({ type: "surface_closed", requested: false, snapshot: true }));
+      const snapshot = await takeSnapshot(
+        execFileFn,
+        cli,
+        workspaceRef,
+        paneRef,
+      );
+      facts.push(
+        snapshot.surfaces?.some((s) => s.id === surfaceId)
+          ? fact({
+              type: "unknown",
+              fact: "snapshot",
+              reason: "surface present in a fresh cmux snapshot",
+              snapshot: true,
+            })
+          : fact({ type: "surface_closed", requested: false, snapshot: true }),
+      );
     } catch (error) {
-      facts.push(isNotFound(error)
-        ? fact({ type: "surface_closed", requested: false, snapshot: true })
-        : fact({ type: "unknown", fact: "snapshot", reason: `cmux snapshot unavailable: ${error.message}` }));
+      facts.push(
+        isNotFound(error)
+          ? fact({ type: "surface_closed", requested: false, snapshot: true })
+          : fact({
+              type: "unknown",
+              fact: "snapshot",
+              reason: `cmux snapshot unavailable: ${error.message}`,
+            }),
+      );
     }
     if (subscription.ended) {
-      facts.push(fact({ type: "backend_disconnected", reason: "cmux events stream ended; live observation is not restored" }));
+      facts.push(
+        fact({
+          type: "backend_disconnected",
+          reason: "cmux events stream ended; live observation is not restored",
+        }),
+      );
     }
     return facts;
   }
@@ -501,10 +672,17 @@ export function createCmuxExecutionBackend({
   /** Close a surface this launch created but never handed out. */
   async function rollbackSurface(refs, error) {
     try {
-      await execFileFn(cli, closeSurfaceArgs(refs.workspaceRef, refs.surfaceRef), { timeout: CLI_DEADLINE_MS });
+      await execFileFn(
+        cli,
+        closeSurfaceArgs(refs.workspaceRef, refs.surfaceRef),
+        { timeout: CLI_DEADLINE_MS },
+      );
     } catch (closeError) {
       if (isNotFound(closeError)) return error;
-      return new AggregateError([error, closeError], `launch failed and created surface ${refs.surfaceRef} could not be closed`);
+      return new AggregateError(
+        [error, closeError],
+        `launch failed and created surface ${refs.surfaceRef} could not be closed`,
+      );
     }
     return error;
   }
@@ -518,12 +696,24 @@ export function createCmuxExecutionBackend({
 
     async detect() {
       const cooling = coolingDownReason();
-      if (cooling) return { available: false, version: "", capabilities: [], reason: cooling };
+      if (cooling)
+        return {
+          available: false,
+          version: "",
+          capabilities: [],
+          reason: cooling,
+        };
       try {
-        const { stdout: versionOut } = await execFileFn(cli, ["--version"], { timeout: CLI_DEADLINE_MS });
-        const { stdout: capsJson } = await execFileFn(cli, ["capabilities"], { timeout: CLI_DEADLINE_MS });
+        const { stdout: versionOut } = await execFileFn(cli, ["--version"], {
+          timeout: CLI_DEADLINE_MS,
+        });
+        const { stdout: capsJson } = await execFileFn(cli, ["capabilities"], {
+          timeout: CLI_DEADLINE_MS,
+        });
         const caps = JSON.parse(capsJson);
-        const capabilities = Array.isArray(caps.capabilities) ? caps.capabilities : [];
+        const capabilities = Array.isArray(caps.capabilities)
+          ? caps.capabilities
+          : [];
         const version = versionOut.trim();
         const parentWorkspace = process.env.CMUX_WORKSPACE_ID;
         const available =
@@ -558,10 +748,14 @@ export function createCmuxExecutionBackend({
 
       const parentWorkspace = process.env.CMUX_WORKSPACE_ID;
       if (!parentWorkspace) {
-        throw new Error("cmux backend requires CMUX_WORKSPACE_ID; launch outside cmux is not supported");
+        throw new Error(
+          "cmux backend requires CMUX_WORKSPACE_ID; launch outside cmux is not supported",
+        );
       }
 
-      const environmentPayload = serializeEnvironment(scrubMuxEnvironment(request.environment));
+      const environmentPayload = serializeEnvironment(
+        scrubMuxEnvironment(request.environment),
+      );
       const cooling = coolingDownReason();
       if (cooling) throw new Error(`cmux backend is cooling down: ${cooling}`);
 
@@ -571,7 +765,9 @@ export function createCmuxExecutionBackend({
       state.launches.push(request);
 
       const subscription = startSubscription(spawnFn, cli, [
-        "surface.closed", "pane.closed", "workspace.closed",
+        "surface.closed",
+        "pane.closed",
+        "workspace.closed",
       ]);
       state.subscriptions += 1;
 
@@ -586,7 +782,9 @@ export function createCmuxExecutionBackend({
 
       let environmentPipe;
       try {
-        environmentPipe = await createEnvironmentPipe(environmentPayload, { always: true });
+        environmentPipe = await createEnvironmentPipe(environmentPayload, {
+          always: true,
+        });
       } catch (error) {
         await subscription.stop();
         throw error;
@@ -610,7 +808,11 @@ export function createCmuxExecutionBackend({
 
       let createRefs;
       try {
-        createRefs = await createSurface(parentWorkspace, command, request.signal);
+        createRefs = await createSurface(
+          parentWorkspace,
+          command,
+          request.signal,
+        );
       } catch (error) {
         const reported = createOutcomeUnknown(error)
           ? await collectOrphan(environmentPipe, parentWorkspace, error)
@@ -631,10 +833,19 @@ export function createCmuxExecutionBackend({
           await environmentPipe?.cleanup();
         }
         // Snapshot for UUID correlation (spike: three-way UUID correlation).
-        snapshot = await takeSnapshot(execFileFn, cli, parentWorkspace, createRefs.paneRef);
-        snapshotSurface = snapshot.surfaces?.find((s) => s.ref === createRefs.surfaceRef);
+        snapshot = await takeSnapshot(
+          execFileFn,
+          cli,
+          parentWorkspace,
+          createRefs.paneRef,
+        );
+        snapshotSurface = snapshot.surfaces?.find(
+          (s) => s.ref === createRefs.surfaceRef,
+        );
         if (!snapshotSurface) {
-          throw new Error(`created surface ${createRefs.surfaceRef} not present in pane snapshot`);
+          throw new Error(
+            `created surface ${createRefs.surfaceRef} not present in pane snapshot`,
+          );
         }
       } catch (error) {
         const reported = await rollbackSurface(createRefs, error);
@@ -642,7 +853,10 @@ export function createCmuxExecutionBackend({
         throw reported;
       }
       if (state.helperPane?.ref === createRefs.paneRef || !state.helperPane) {
-        state.helperPane = { ref: snapshot.pane_ref ?? createRefs.paneRef, id: snapshot.pane_id };
+        state.helperPane = {
+          ref: snapshot.pane_ref ?? createRefs.paneRef,
+          id: snapshot.pane_id,
+        };
       }
 
       // SPI-conforming handle shape (ExecutionSurfaceHandle).
@@ -698,16 +912,24 @@ export function createCmuxExecutionBackend({
       // Attach the disposer so release() can call it.
       subscription.removeListener = removeListener;
 
-      return createLease({ handle, request, eventQueue,
-        reconcile: (lost) => reconcileSurface({
-          lost,
-          surface: handle.surface,
-          workspaceRef: snapshot.workspace_ref ?? parentWorkspace,
-          paneRef: snapshot.pane_ref ?? createRefs.paneRef,
-          surfaceId: snapshotSurface.id,
-          subscription,
-        }),
-        releaseTransport: async () => { state.releaseCount += 1; subscription.removeListener?.(); await subscription.stop(); },
+      return createLease({
+        handle,
+        request,
+        eventQueue,
+        reconcile: (lost) =>
+          reconcileSurface({
+            lost,
+            surface: handle.surface,
+            workspaceRef: snapshot.workspace_ref ?? parentWorkspace,
+            paneRef: snapshot.pane_ref ?? createRefs.paneRef,
+            surfaceId: snapshotSurface.id,
+            subscription,
+          }),
+        releaseTransport: async () => {
+          state.releaseCount += 1;
+          subscription.removeListener?.();
+          await subscription.stop();
+        },
       });
     },
 
@@ -716,13 +938,18 @@ export function createCmuxExecutionBackend({
     async reattach(handle) {
       const workspaceRef = handle?.data?.workspaceRef;
       if (!workspaceRef) {
-        return { status: "unknown", reason: "handle missing workspaceRef; cannot query cmux" };
+        return {
+          status: "unknown",
+          reason: "handle missing workspaceRef; cannot query cmux",
+        };
       }
 
       // Start live observation BEFORE snapshot — mirror the launch ordering so
       // no events are missed between snapshot and first live delivery.
       const subscription = startSubscription(spawnFn, cli, [
-        "surface.closed", "pane.closed", "workspace.closed",
+        "surface.closed",
+        "pane.closed",
+        "workspace.closed",
       ]);
       state.subscriptions += 1;
 
@@ -735,7 +962,12 @@ export function createCmuxExecutionBackend({
       }
 
       try {
-        const snapshot = await takeSnapshot(execFileFn, cli, workspaceRef, handle.data?.paneRef);
+        const snapshot = await takeSnapshot(
+          execFileFn,
+          cli,
+          workspaceRef,
+          handle.data?.paneRef,
+        );
         const snapshotSurface = handle.data?.surfaceId
           ? snapshot.surfaces?.find((s) => s.id === handle.data.surfaceId)
           : snapshot.surfaces?.find((s) => s.ref === handle.data?.surfaceRef);
@@ -749,7 +981,10 @@ export function createCmuxExecutionBackend({
         const reattachedHandle = {
           ...handle,
           surface: reattachedSurface,
-          display: { label: `cmux:${workspaceRef}`, hint: `cmux:${workspaceRef}` },
+          display: {
+            label: `cmux:${workspaceRef}`,
+            hint: `cmux:${workspaceRef}`,
+          },
         };
 
         const eventQueue = createEventQueue();
@@ -783,22 +1018,35 @@ export function createCmuxExecutionBackend({
               surface: reattachedHandle.surface,
             });
           } else if (frame && ownsFrame(frame, owned)) {
-            eventQueue.push(translateCmuxEvent(frame, reattachedHandle.surface));
+            eventQueue.push(
+              translateCmuxEvent(frame, reattachedHandle.surface),
+            );
           }
         });
         subscription.removeListener = removeListener;
 
-        return { status: "present", lease: createLease({ handle: reattachedHandle, request: {}, eventQueue,
-          reconcile: (lost) => reconcileSurface({
-            lost,
-            surface: reattachedHandle.surface,
-            workspaceRef,
-            paneRef: handle.data?.paneRef ?? snapshot.pane_ref,
-            surfaceId: snapshotSurface.id,
-            subscription,
+        return {
+          status: "present",
+          lease: createLease({
+            handle: reattachedHandle,
+            request: {},
+            eventQueue,
+            reconcile: (lost) =>
+              reconcileSurface({
+                lost,
+                surface: reattachedHandle.surface,
+                workspaceRef,
+                paneRef: handle.data?.paneRef ?? snapshot.pane_ref,
+                surfaceId: snapshotSurface.id,
+                subscription,
+              }),
+            releaseTransport: async () => {
+              state.releaseCount += 1;
+              subscription.removeListener?.();
+              await subscription.stop();
+            },
           }),
-          releaseTransport: async () => { state.releaseCount += 1; subscription.removeListener?.(); await subscription.stop(); },
-        }) };
+        };
       } catch (error) {
         await subscription.stop();
         if (isNotFound(error)) return { status: "gone" };
@@ -816,7 +1064,9 @@ export function createCmuxExecutionBackend({
       try {
         // Close only the owned surface; the shared helper pane and parent
         // workspace belong to the user and other children.
-        await execFileFn(cli, closeSurfaceArgs(workspaceRef, surfaceRef), { timeout: CLI_DEADLINE_MS });
+        await execFileFn(cli, closeSurfaceArgs(workspaceRef, surfaceRef), {
+          timeout: CLI_DEADLINE_MS,
+        });
         state.closed.add(handle.surface?.id ?? surfaceRef);
       } catch (error) {
         if (isNotFound(error)) {

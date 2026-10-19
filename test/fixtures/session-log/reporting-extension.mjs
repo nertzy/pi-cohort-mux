@@ -2,7 +2,8 @@ const socketPath = process.env.PI_COHORT_SPIKE_SOCKET;
 const fifoPath = process.env.PI_COHORT_SPIKE_FIFO;
 const piAiModule = process.env.PI_COHORT_SPIKE_PI_AI_MODULE;
 
-if (!socketPath || !fifoPath || !piAiModule) throw new Error("Missing session-log spike runtime path");
+if (!socketPath || !fifoPath || !piAiModule)
+  throw new Error("Missing session-log spike runtime path");
 
 const { createFauxCore, fauxAssistantMessage } = await import(piAiModule);
 const net = await import("node:net");
@@ -23,10 +24,20 @@ export default function (pi) {
   const fixture = createFauxCore({
     provider: "fixture",
     api: "fixture-api",
-    models: [{ id: "fixed", name: "Fixed fixture", contextWindow: 4096, maxTokens: 1024 }],
+    models: [
+      {
+        id: "fixed",
+        name: "Fixed fixture",
+        contextWindow: 4096,
+        maxTokens: 1024,
+      },
+    ],
   });
   fixture.setResponses([fauxAssistantMessage("fixture assistant response")]);
-  pi.registerProvider("fixture", { ...fixture, apiKey: "fixture-not-a-secret" });
+  pi.registerProvider("fixture", {
+    ...fixture,
+    apiKey: "fixture-not-a-secret",
+  });
 
   reportReady = () => {
     if (!authenticated || !context || readyReported) return;

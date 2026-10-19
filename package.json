@@ -3,8 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*"],
-  "engines": { "node": ">=20" },
-  "scripts": { "test": "node --test packages/*/test/*.test.mjs test/*.test.mjs" },
-  "devDependencies": { "jiti": "^2.7.0", "pi-cohort": "7.4.1" }
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test packages/*/test/*.test.mjs test/*.test.mjs"
+  },
+  "devDependencies": {
+    "jiti": "^2.7.0",
+    "pi-cohort": "7.4.1"
+  }
 }
