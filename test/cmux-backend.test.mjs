@@ -98,6 +98,10 @@ after(() => {
  *   snapshotError    – make list-pane-surfaces throw a custom error
  *   closeNotFound    – make workspace close throw "not_found"
  *   closeError       – make workspace close throw a custom error
+ *   createError      – make new-pane/new-surface throw this error
+ *   fifoUnread       – create succeeds but the child never opens the env FIFO
+ *                      (e.g. its `cd` failed), so the hand-off never completes
+ *   snapshotWithoutSurface – snapshots omit the created surface
  *   capabilities     – capabilities array returned by `cmux capabilities`
  *   version          – string returned by `cmux --version`
  */
@@ -107,6 +111,9 @@ function makeFakeIo({
   snapshotError = null,
   closeNotFound = false,
   closeError = null,
+  createError = null,
+  fifoUnread = false,
+  snapshotWithoutSurface = false,
   capabilities = ["events.v1"],
   version = "cmux 0.64.22",
 } = {}) {
@@ -114,7 +121,7 @@ function makeFakeIo({
   const fifoPayloads = [];
   // Mutable across calls so a test can simulate the helper pane collapsing
   // between launches; a successful create makes the pane exist again.
-  const behavior = { paneGone: false, closeNotFound, closeError };
+  const behavior = { paneGone: false, closeNotFound, closeError, createError, fifoUnread, snapshotWithoutSurface };
 
   async function execFile(cli, args, _opts) {
     calls.push({ type: "exec", args: [...args] });
@@ -132,10 +139,11 @@ function makeFakeIo({
         });
         throw err;
       }
+      if (behavior.createError) throw behavior.createError;
       // The FIFO path is embedded in the --command string (bootstrap approach).
       // Drain it so the background tee writer can complete.
       const cmdIdx = args.indexOf("--command");
-      if (cmdIdx !== -1) {
+      if (cmdIdx !== -1 && !behavior.fifoUnread) {
         const fifoMatch = args[cmdIdx + 1].match(/'([^']+\/environment\.fifo)'/);
         if (fifoMatch) fifoPayloads.push(await readFile(fifoMatch[1], "utf8"));
       }
@@ -151,7 +159,9 @@ function makeFakeIo({
         throw err;
       }
       if (snapshotError) throw snapshotError;
-      return { stdout: JSON.stringify(fakeSnapshot()) + "\n", stderr: "" };
+      const snapshot = fakeSnapshot();
+      if (behavior.snapshotWithoutSurface) snapshot.surfaces = [];
+      return { stdout: JSON.stringify(snapshot) + "\n", stderr: "" };
     }
     if (args[0] === "close-surface") {
       if (behavior.closeNotFound) {
@@ -712,6 +722,74 @@ test("launch: breaking out of for-await releases the transport", async () => {
 
   assert.equal(backend.state.releaseCount, 1);
   assert.ok(children[0]._exited, "events subscription process stopped");
+});
+
+// ─── launch: post-create failures roll back the created surface ──────────────
+
+function closeSurfaceCalls(calls) {
+  return calls.filter((c) => c.type === "exec" && c.args[0] === "close-surface");
+}
+
+function assertRolledBack(calls, children) {
+  const closes = closeSurfaceCalls(calls);
+  assert.equal(closes.length, 1, "the created surface is closed");
+  assert.deepEqual(closes[0].args, ["close-surface", "--workspace", FAKE_WS_REF, "--surface", FAKE_SF_REF]);
+  assert.ok(children.every((child) => child._exited), "events subscription stopped");
+}
+
+test("launch: env hand-off that never completes times out and rolls back", async () => {
+  const { execFile, spawn, calls, children } = makeFakeIo({ fifoUnread: true });
+  const backend = createCmuxBackend({ execFile, spawn, handoffDeadlineMs: 100 });
+
+  await assert.rejects(withinDeadline(backend.launch(makeRequest())), /environment hand-off/);
+  assertRolledBack(calls, children);
+});
+
+test("launch: aborting during the env hand-off rolls back", async () => {
+  const { execFile, spawn, calls, children } = makeFakeIo({ fifoUnread: true });
+  const backend = createCmuxBackend({ execFile, spawn });
+  const controller = new AbortController();
+
+  const launch = backend.launch(makeRequest({ signal: controller.signal }));
+  setTimeout(() => controller.abort(new Error("caller cancelled")), 50);
+  await assert.rejects(withinDeadline(launch), /caller cancelled/);
+  assertRolledBack(calls, children);
+});
+
+test("launch: post-create snapshot failure rolls back the surface and subscription", async () => {
+  const { execFile, spawn, calls, children } = makeFakeIo({ snapshotError: new Error("snapshot timed out") });
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  await assert.rejects(backend.launch(makeRequest()), /snapshot timed out/);
+  assertRolledBack(calls, children);
+});
+
+test("launch: created surface missing from the snapshot is closed, not just unobserved", async () => {
+  const { execFile, spawn, calls, children } = makeFakeIo({ snapshotWithoutSurface: true });
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  await assert.rejects(backend.launch(makeRequest()), /not present in pane snapshot/);
+  assertRolledBack(calls, children);
+});
+
+test("launch: rollback that finds the surface already gone keeps the original error", async () => {
+  const { execFile, spawn, calls, children } = makeFakeIo({ snapshotError: new Error("snapshot timed out"), closeNotFound: true });
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  await assert.rejects(backend.launch(makeRequest()), (error) => error.message === "snapshot timed out");
+  assertRolledBack(calls, children);
+});
+
+test("launch: rollback close failure is reported alongside the original error", async () => {
+  const { execFile, spawn } = makeFakeIo({ snapshotError: new Error("snapshot timed out"), closeError: new Error("socket gone") });
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  await assert.rejects(backend.launch(makeRequest()), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors.map((e) => e.message), ["snapshot timed out", "socket gone"]);
+    assert.match(error.message, /surface:100/);
+    return true;
+  });
 });
 
 // ─── events subscription lifecycle ───────────────────────────────────────────

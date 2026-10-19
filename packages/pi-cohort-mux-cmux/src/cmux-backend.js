@@ -52,6 +52,7 @@ import {
 const execFile = promisify(execFileCallback);
 const CLI_DEADLINE_MS = 10_000;
 const ACK_DEADLINE_MS = 10_000;
+const HANDOFF_DEADLINE_MS = 10_000;
 const BOOTSTRAP_PATH = environmentBootstrapPath;
 
 // ─── Shell-safe command building ──────────────────────────────────────────────
@@ -269,11 +270,14 @@ function translateCmuxEvent(frame, surface) {
  * @param {string} [options.cli="cmux"]        Path to the cmux binary.
  * @param {Function} [options.execFile]        Injected execFile (for testing).
  * @param {Function} [options.spawn]           Injected spawn (for testing).
+ * @param {number} [options.handoffDeadlineMs] Bound on the child reading its
+ *   environment after the surface exists (for testing).
  */
 export function createCmuxExecutionBackend({
   cli = "cmux",
   execFile: execFileFn = (...args) => execFile(...args),
   spawn: spawnFn = spawnProcess,
+  handoffDeadlineMs = HANDOFF_DEADLINE_MS,
 } = {}) {
   const state = {
     trace: [],
@@ -285,6 +289,64 @@ export function createCmuxExecutionBackend({
     lastRequest: undefined,
     helperPane: null,
   };
+
+  async function createSurface(parentWorkspace, command, signal) {
+    // First child creates the right-side helper pane; later children become
+    // tabs in it. The pane never holds an idle shell surface. cmux collapses
+    // a pane when its last surface closes, so verify before reuse.
+    let helper = state.helperPane;
+    if (helper) {
+      try {
+        await takeSnapshot(execFileFn, cli, parentWorkspace, helper.ref);
+      } catch {
+        helper = null;
+        state.helperPane = null;
+      }
+    }
+    const createArgs = helper
+      ? ["new-surface", "--workspace", parentWorkspace, "--pane", helper.ref, "--type", "terminal", "--focus", "false", "--command", command]
+      : ["new-pane", "--workspace", parentWorkspace, "--type", "terminal", "--direction", "right", "--focus", "false", "--command", command];
+    const result = await execFileFn(cli, createArgs, { timeout: CLI_DEADLINE_MS, signal });
+    const refs = parseCreateRefs(result.stdout);
+    const paneRef = helper?.ref ?? refs.paneRef;
+    if (!helper && paneRef) state.helperPane = { ref: paneRef, id: null };
+    return { ...refs, paneRef };
+  }
+
+  /** Wait for the child to read its environment, bounded and abortable. */
+  async function awaitHandoff(environmentPipe, signal) {
+    if (!environmentPipe) return;
+    let timer;
+    let onAbort;
+    try {
+      await Promise.race([
+        environmentPipe.writer.completion,
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`environment hand-off did not complete within ${handoffDeadlineMs}ms; the child never opened its FIFO (missing cwd or failed shell?)`)),
+            handoffDeadlineMs,
+          );
+          onAbort = () => reject(signal.reason ?? Object.assign(new Error("launch aborted"), { name: "AbortError" }));
+          if (signal?.aborted) onAbort();
+          else signal?.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /** Close a surface this launch created but never handed out. */
+  async function rollbackSurface(refs, error) {
+    try {
+      await execFileFn(cli, ["close-surface", "--workspace", refs.workspaceRef, "--surface", refs.surfaceRef], { timeout: CLI_DEADLINE_MS });
+    } catch (closeError) {
+      if (isNotFound(closeError)) return error;
+      return new AggregateError([error, closeError], `launch failed and created surface ${refs.surfaceRef} could not be closed`);
+    }
+    return error;
+  }
 
   return {
     name: "cmux",
@@ -365,49 +427,39 @@ export function createCmuxExecutionBackend({
       // paths identical rather than trusting the pane's inherited cwd.
       const command = `cd ${quoteShell(request.cwd)} && ${childCommand}`;
 
-      // First child creates the right-side helper pane; later children become
-      // tabs in it. The pane never holds an idle shell surface. cmux collapses
-      // a pane when its last surface closes, so verify before reuse.
-      let helper = state.helperPane;
-      if (helper) {
-        try {
-          await takeSnapshot(execFileFn, cli, parentWorkspace, helper.ref);
-        } catch {
-          helper = null;
-          state.helperPane = null;
-        }
-      }
-      const createArgs = helper
-        ? ["new-surface", "--workspace", parentWorkspace, "--pane", helper.ref, "--type", "terminal", "--focus", "false", "--command", command]
-        : ["new-pane", "--workspace", parentWorkspace, "--type", "terminal", "--direction", "right", "--focus", "false", "--command", command];
-
       let createRefs;
       try {
-        const launch = execFileFn(cli, createArgs, {
-          timeout: CLI_DEADLINE_MS,
-          signal: request.signal,
-        });
-        const [result] = await Promise.all([
-          launch,
-          environmentPipe?.writer.completion ?? Promise.resolve(),
-        ]);
-        createRefs = parseCreateRefs(result.stdout);
+        createRefs = await createSurface(parentWorkspace, command, request.signal);
       } catch (error) {
+        await environmentPipe?.cleanup();
         await subscription.stop();
         throw error;
-      } finally {
-        await environmentPipe?.cleanup();
       }
-      const paneRef = helper?.ref ?? createRefs.paneRef;
 
-      // Snapshot for UUID correlation (spike: three-way UUID correlation).
-      const snapshot = await takeSnapshot(execFileFn, cli, parentWorkspace, paneRef);
-      const snapshotSurface = snapshot.surfaces?.find((s) => s.ref === createRefs.surfaceRef);
-      if (!snapshotSurface) {
+      // From here the surface exists. Until a lease is returned, every failure
+      // closes exactly that surface and stops the subscription.
+      let snapshot;
+      let snapshotSurface;
+      try {
+        try {
+          await awaitHandoff(environmentPipe, request.signal);
+        } finally {
+          await environmentPipe?.cleanup();
+        }
+        // Snapshot for UUID correlation (spike: three-way UUID correlation).
+        snapshot = await takeSnapshot(execFileFn, cli, parentWorkspace, createRefs.paneRef);
+        snapshotSurface = snapshot.surfaces?.find((s) => s.ref === createRefs.surfaceRef);
+        if (!snapshotSurface) {
+          throw new Error(`created surface ${createRefs.surfaceRef} not present in pane snapshot`);
+        }
+      } catch (error) {
+        const reported = await rollbackSurface(createRefs, error);
         await subscription.stop();
-        throw new Error(`created surface ${createRefs.surfaceRef} not present in pane snapshot`);
+        throw reported;
       }
-      state.helperPane = { ref: snapshot.pane_ref ?? paneRef, id: snapshot.pane_id };
+      if (state.helperPane?.ref === createRefs.paneRef || !state.helperPane) {
+        state.helperPane = { ref: snapshot.pane_ref ?? createRefs.paneRef, id: snapshot.pane_id };
+      }
 
       // SPI-conforming handle shape (ExecutionSurfaceHandle).
       const surfaceIdentity = {
