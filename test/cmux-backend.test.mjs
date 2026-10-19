@@ -17,8 +17,10 @@
  *   6. release() stops the subscription but does NOT close the surface.
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { readFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import test, { after, before } from "node:test";
 import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
@@ -121,7 +123,7 @@ function makeFakeIo({
   const fifoPayloads = [];
   // Mutable across calls so a test can simulate the helper pane collapsing
   // between launches; a successful create makes the pane exist again.
-  const behavior = { paneGone: false, closeNotFound, closeError, createError, fifoUnread, snapshotWithoutSurface, snapshotNotFound, snapshotError, onSnapshot: null, surfaceBusy: false };
+  const behavior = { paneGone: false, closeNotFound, closeError, createError, fifoUnread, snapshotWithoutSurface, snapshotNotFound, snapshotError, onSnapshot: null, surfaceBusy: false, onCreate: null };
 
   async function execFile(cli, args, _opts) {
     calls.push({ type: "exec", args: [...args] });
@@ -139,6 +141,7 @@ function makeFakeIo({
         });
         throw err;
       }
+      await behavior.onCreate?.(args);
       if (behavior.createError) throw behavior.createError;
       // The FIFO path is embedded in the --command string (bootstrap approach).
       // Drain it so the background tee writer can complete.
@@ -193,6 +196,17 @@ function makeFakeIo({
 
   return { execFile, spawn, calls, behavior, fifoPayloads, children };
 }
+
+/** The --command string of a create call, split back into its shell tokens. */
+function commandTokens(args) {
+  const command = args[args.indexOf("--command") + 1];
+  return execFileSync("/bin/sh", ["-c", `printf '%s\\0' ${command}`]).toString().split("\0").slice(0, -1);
+}
+
+const pathExists = (path) => access(path).then(() => true, () => false);
+
+/** An execFile timeout as Node reports it: the child was killed. */
+const createTimeout = () => Object.assign(new Error("Command failed: cmux new-pane (timed out)"), { killed: true, signal: "SIGTERM", code: null });
 
 function makeRequest(overrides = {}) {
   return {
@@ -359,13 +373,27 @@ test("launch: child command starts in the request cwd", async () => {
     (c) => c.type === "exec" && c.args[0] === "new-pane",
   );
   assert.ok(createCall, "new-pane call present");
-  const cmdIdx = createCall.args.indexOf("--command");
-  assert.ok(cmdIdx >= 0, "--command present");
-  assert.ok(
-    createCall.args[cmdIdx + 1].startsWith("cd '/exact/cwd/test' && "),
-    "child command enters the request cwd first",
-  );
+  const [sh, launcher, launchDir, fifo, cli, cwd, bootstrap, ...child] = commandTokens(createCall.args);
+  assert.equal(sh, "/bin/sh", "the login shell only starts /bin/sh; the launcher does the rest");
+  assert.match(launcher, /\/surface-launch\.sh$/);
+  assert.equal(fifo, join(launchDir, "environment.fifo"));
+  assert.equal(cli, "cmux", "the surface can close itself with the same CLI");
+  assert.equal(cwd, "/exact/cwd/test", "the launcher enters the request cwd");
+  assert.match(bootstrap, /\/env-bootstrap\.sh$/);
+  assert.deepEqual(child, ["pi", "--session", "session.jsonl"]);
+  assert.equal(await pathExists(launchDir), false, "launch directory removed after the hand-off");
 
+  await lease.release();
+});
+
+test("launch: an empty environment still goes through the launcher's FIFO", async () => {
+  const { execFile, spawn, calls, fifoPayloads } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  const lease = await backend.launch(makeRequest({ environment: {} }));
+
+  const createCall = calls.find((c) => c.type === "exec" && c.args[0] === "new-pane");
+  assert.match(commandTokens(createCall.args)[1], /\/surface-launch\.sh$/);
+  assert.deepEqual(fifoPayloads, [""], "an abandoned launch is refused even without environment");
   await lease.release();
 });
 
@@ -827,6 +855,80 @@ test("launch: rollback close failure is reported alongside the original error", 
     assert.match(error.message, /surface:100/);
     return true;
   });
+});
+
+// ─── launch: ambiguous create failures ───────────────────────────────────────
+
+/** Have the fake surface report its own id `delayMs` after the create call. */
+function lateSurface(io, surfaceId, delayMs = 30) {
+  const seen = {};
+  io.behavior.onCreate = (args) => {
+    const [, , launchDir, fifo] = commandTokens(args);
+    seen.launchDir = launchDir;
+    setTimeout(async () => {
+      seen.fifoPresent = await pathExists(fifo);
+      await writeFile(join(launchDir, "surface-id"), `${surfaceId}\n`).catch(() => {});
+    }, delayMs);
+  };
+  return seen;
+}
+
+test("launch: a create that times out after cmux made the surface closes that surface by its own id", async () => {
+  const io = makeFakeIo({ createError: createTimeout() });
+  const seen = lateSurface(io, "ORPHAN-UUID");
+  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 1_000 });
+
+  await assert.rejects(backend.launch(makeRequest()), (error) => error.message.includes("timed out"));
+
+  const closes = closeSurfaceCalls(io.calls);
+  assert.deepEqual(closes.map((c) => c.args), [["close-surface", "--workspace", FAKE_WS_ID, "--surface", "ORPHAN-UUID", "--force"]]);
+  assert.equal(seen.fifoPresent, false, "the FIFO is withdrawn before waiting, so the orphan cannot start the child");
+  assert.equal(await pathExists(seen.launchDir), false);
+  assert.ok(io.children.every((child) => child._exited), "events subscription stopped");
+});
+
+test("launch: a timed-out create with no surface reporting rejects after the grace and closes nothing", async () => {
+  const io = makeFakeIo({ createError: createTimeout() });
+  const seen = lateSurface(io, "TOO-LATE", 200);
+  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 50 });
+
+  await assert.rejects(backend.launch(makeRequest()), /timed out/);
+
+  assert.deepEqual(closeSurfaceCalls(io.calls), []);
+  assert.equal(await pathExists(seen.launchDir), false, "a later surface finds no launch directory and closes itself");
+});
+
+test("launch: a create cmux rejects outright does not wait for an orphan", async () => {
+  const io = makeFakeIo({ createError: Object.assign(new Error("new-pane failed"), { stderr: "Error: invalid_params: Missing or invalid direction" }) });
+  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 2_000 });
+
+  const started = Date.now();
+  await assert.rejects(backend.launch(makeRequest()), /new-pane failed/);
+  assert.ok(Date.now() - started < 1_000, "no grace wait when cmux answered");
+  assert.deepEqual(closeSurfaceCalls(io.calls), []);
+});
+
+test("launch: an orphan that cannot be closed is reported alongside the create failure", async () => {
+  const io = makeFakeIo({ createError: createTimeout(), closeError: new Error("socket gone") });
+  lateSurface(io, "ORPHAN-UUID");
+  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 1_000 });
+
+  await assert.rejects(backend.launch(makeRequest()), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors.map((e) => e.message), ["Command failed: cmux new-pane (timed out)", "socket gone"]);
+    assert.match(error.message, /ORPHAN-UUID/);
+    return true;
+  });
+});
+
+test("launch: an aborted create also collects its orphan", async () => {
+  const io = makeFakeIo({ createError: Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }) });
+  lateSurface(io, "ORPHAN-UUID");
+  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 1_000 });
+
+  await assert.rejects(backend.launch(makeRequest()), { name: "AbortError" });
+
+  assert.equal(closeSurfaceCalls(io.calls).length, 1);
 });
 
 // ─── events subscription lifecycle ───────────────────────────────────────────

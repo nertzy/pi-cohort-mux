@@ -17,8 +17,14 @@ export function serializeEnvironment(environment) {
   }).join("");
 }
 
-export async function createEnvironmentPipe(payload, { spawn = spawnProcess, run = (...args) => execFile(...args) } = {}) {
-  if (payload === "") return undefined;
+/**
+ * Create an owner-only FIFO in a private directory and a writer that delivers
+ * `payload` to its first reader. An empty payload yields undefined unless
+ * `always` is set: a launcher that guards on the FIFO's presence needs one
+ * even with nothing to send.
+ */
+export async function createEnvironmentPipe(payload, { spawn = spawnProcess, run = (...args) => execFile(...args), always = false } = {}) {
+  if (payload === "" && !always) return undefined;
   const directory = await mkdtemp(join(tmpdir(), "pi-cohort-mux-env-"));
   const pipePath = join(directory, "environment.fifo");
   try { await run("mkfifo", ["-m", "600", pipePath]); }
@@ -29,7 +35,7 @@ export async function createEnvironmentPipe(payload, { spawn = spawnProcess, run
     child.once("exit", (code, signal) => code === 0 ? resolve() : reject(new Error(`environment pipe writer exited with code ${code}, signal ${signal}`)));
   });
   child.stdin.end(payload, "utf8");
-  return { pipePath, writer: { completion }, async cleanup() {
+  return { pipePath, directory, writer: { completion }, async cleanup() {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await completion.catch(() => {});
     await rm(directory, { recursive: true, force: true });

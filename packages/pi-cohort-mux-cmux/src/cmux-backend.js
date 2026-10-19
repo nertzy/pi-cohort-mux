@@ -40,6 +40,10 @@
  * rejection is safer than undefined behavior.
  */
 import { execFile as execFileCallback, spawn as spawnProcess } from "node:child_process";
+import { readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   createEnvironmentPipe,
@@ -53,7 +57,9 @@ const execFile = promisify(execFileCallback);
 const CLI_DEADLINE_MS = 10_000;
 const ACK_DEADLINE_MS = 10_000;
 const HANDOFF_DEADLINE_MS = 10_000;
+const ORPHAN_GRACE_MS = 3_000;
 const BOOTSTRAP_PATH = environmentBootstrapPath;
+const LAUNCHER_PATH = fileURLToPath(new URL("./surface-launch.sh", import.meta.url));
 
 // ─── Shell-safe command building ──────────────────────────────────────────────
 
@@ -84,6 +90,25 @@ function isNotFound(error) {
   return /\bnot_found\b|\b(?:workspace|pane|surface) ref not found\b/i.test(text);
 }
 
+/** True when execFile killed cmux at its deadline (cmux never answered). */
+function isCliTimeout(error) {
+  return error?.killed === true;
+}
+
+/** True when the request's abort signal cancelled the call. */
+function isAbort(error) {
+  return error?.name === "AbortError" || error?.code === "ABORT_ERR";
+}
+
+/**
+ * True when a create call failed without cmux answering, so cmux may still
+ * have made (or later make) the surface: a timeout, an abort, or output we
+ * could not parse. An error cmux itself reported means nothing was created.
+ */
+function createOutcomeUnknown(error) {
+  return isCliTimeout(error) || isAbort(error) || error?.unexpectedCreateOutput === true;
+}
+
 // ─── Environment scrubbing ──────────────────────────────────────────────────
 
 /**
@@ -109,7 +134,7 @@ function parseCreateRefs(output) {
   const pane = text.match(/(?:^|\s)(pane:\d+)(?:\s|$)/);
   const workspace = text.match(/(?:^|\s)(workspace:\d+)(?:\s|$)/);
   if (!surface || !workspace) {
-    throw new Error(`Unexpected cmux create output: ${JSON.stringify(text)}`);
+    throw Object.assign(new Error(`Unexpected cmux create output: ${JSON.stringify(text)}`), { unexpectedCreateOutput: true });
   }
   return { surfaceRef: surface[1], paneRef: pane?.[1] ?? null, workspaceRef: workspace[1] };
 }
@@ -286,12 +311,15 @@ function translateCmuxEvent(frame, surface) {
  * @param {Function} [options.spawn]           Injected spawn (for testing).
  * @param {number} [options.handoffDeadlineMs] Bound on the child reading its
  *   environment after the surface exists (for testing).
+ * @param {number} [options.orphanGraceMs] How long an ambiguous create failure
+ *   waits for a late surface to report its own id (for testing).
  */
 export function createCmuxExecutionBackend({
   cli = "cmux",
   execFile: execFileFn = (...args) => execFile(...args),
   spawn: spawnFn = spawnProcess,
   handoffDeadlineMs = HANDOFF_DEADLINE_MS,
+  orphanGraceMs = ORPHAN_GRACE_MS,
 } = {}) {
   const state = {
     trace: [],
@@ -318,28 +346,60 @@ export function createCmuxExecutionBackend({
 
   async function createSurface(parentWorkspace, command, signal) {
     return withHelperLock(async () => {
-      // First child creates the right-side helper pane; later children become
-      // tabs in it. The pane never holds an idle shell surface. cmux collapses
-      // a pane when its last surface closes, so verify before reuse.
-      let helper = state.helperPane;
-      if (helper) {
-        try {
-          await takeSnapshot(execFileFn, cli, parentWorkspace, helper.ref);
-        } catch {
-          helper = null;
-          state.helperPane = null;
-        }
-      }
-      const createArgs = helper
-        ? ["new-surface", "--workspace", parentWorkspace, "--pane", helper.ref, "--type", "terminal", "--focus", "false", "--command", command]
-        : ["new-pane", "--workspace", parentWorkspace, "--type", "terminal", "--direction", "right", "--focus", "false", "--command", command];
-      const result = await execFileFn(cli, createArgs, { timeout: CLI_DEADLINE_MS, signal });
-      const refs = parseCreateRefs(result.stdout);
-      const paneRef = helper?.ref ?? refs.paneRef;
-      // Publish the pane before unlocking so the next launch adds a tab to it.
-      if (!helper && paneRef) state.helperPane = { ref: paneRef, id: null };
-      return { ...refs, paneRef };
+      return createSurfaceUnlocked(parentWorkspace, command, signal);
     });
+  }
+
+  async function createSurfaceUnlocked(parentWorkspace, command, signal) {
+    // First child creates the right-side helper pane; later children become
+    // tabs in it. The pane never holds an idle shell surface. cmux collapses
+    // a pane when its last surface closes, so verify before reuse.
+    let helper = state.helperPane;
+    if (helper) {
+      try {
+        await takeSnapshot(execFileFn, cli, parentWorkspace, helper.ref);
+      } catch {
+        helper = null;
+        state.helperPane = null;
+      }
+    }
+    const createArgs = helper
+      ? ["new-surface", "--workspace", parentWorkspace, "--pane", helper.ref, "--type", "terminal", "--focus", "false", "--command", command]
+      : ["new-pane", "--workspace", parentWorkspace, "--type", "terminal", "--direction", "right", "--focus", "false", "--command", command];
+    const result = await execFileFn(cli, createArgs, { timeout: CLI_DEADLINE_MS, signal });
+    const refs = parseCreateRefs(result.stdout);
+    const paneRef = helper?.ref ?? refs.paneRef;
+    // Publish the pane before unlocking so the next launch adds a tab to it.
+    if (!helper && paneRef) state.helperPane = { ref: paneRef, id: null };
+    return { ...refs, paneRef };
+  }
+
+  /**
+   * After a create whose outcome is unknown, collect a surface cmux made anyway.
+   * The surface launcher reports its own CMUX_SURFACE_ID into the launch
+   * directory before it opens the FIFO. Withdraw the FIFO first, so a surface
+   * that appears from now on refuses to start the child and closes itself;
+   * then wait briefly for a report and close exactly the reported surface.
+   * Returns the error to reject launch with.
+   */
+  async function collectOrphan(environmentPipe, parentWorkspace, error) {
+    await rm(environmentPipe.pipePath, { force: true });
+    const markerPath = join(environmentPipe.directory, "surface-id");
+    const deadline = Date.now() + orphanGraceMs;
+    let surfaceId = "";
+    while (!surfaceId && Date.now() < deadline) {
+      surfaceId = (await readFile(markerPath, "utf8").catch(() => "")).trim();
+      if (!surfaceId) await sleep(25);
+    }
+    if (!surfaceId) return error;
+    try {
+      await execFileFn(cli, closeSurfaceArgs(parentWorkspace, surfaceId), { timeout: CLI_DEADLINE_MS });
+    } catch (closeError) {
+      if (!isNotFound(closeError)) {
+        return new AggregateError([error, closeError], `launch failed and the surface cmux created anyway (${surfaceId}) could not be closed`);
+      }
+    }
+    return error;
   }
 
   /** Wait for the child to read its environment, bounded and abortable. */
@@ -463,31 +523,38 @@ export function createCmuxExecutionBackend({
 
       let environmentPipe;
       try {
-        environmentPipe = await createEnvironmentPipe(environmentPayload);
+        environmentPipe = await createEnvironmentPipe(environmentPayload, { always: true });
       } catch (error) {
         await subscription.stop();
         throw error;
       }
 
-      // When a FIFO is present, wrap the real command in the bootstrap script:
-      // sh env-bootstrap.sh <fifo> <cmd> [args...]
-      // The bootstrap runs inside the pane, reads env from the FIFO itself,
-      // then exec()s the real command. No --env-file; the FIFO path (not its
-      // contents) is the only trace in the createArgs.
-      const childCommand = environmentPipe
-        ? buildCommand("/bin/sh", [BOOTSTRAP_PATH, environmentPipe.pipePath, request.command, ...request.args])
-        : buildCommand(request.command, request.args);
-      // cd first: new-pane has no working-directory flag, so keep both create
-      // paths identical rather than trusting the pane's inherited cwd.
-      const command = `cd ${quoteShell(request.cwd)} && ${childCommand}`;
+      // cmux types --command into the user's login shell, so it only starts
+      // /bin/sh; surface-launch.sh reports the surface's own id, refuses an
+      // abandoned launch, enters the cwd (new-pane has no working-directory
+      // flag), and execs env-bootstrap.sh, which reads the environment from
+      // the FIFO. The FIFO path, never its contents, appears in the command.
+      const command = buildCommand("/bin/sh", [
+        LAUNCHER_PATH,
+        environmentPipe.directory,
+        environmentPipe.pipePath,
+        cli,
+        request.cwd,
+        BOOTSTRAP_PATH,
+        request.command,
+        ...request.args,
+      ]);
 
       let createRefs;
       try {
         createRefs = await createSurface(parentWorkspace, command, request.signal);
       } catch (error) {
-        await environmentPipe?.cleanup();
+        const reported = createOutcomeUnknown(error)
+          ? await collectOrphan(environmentPipe, parentWorkspace, error)
+          : error;
+        await environmentPipe.cleanup();
         await subscription.stop();
-        throw error;
+        throw reported;
       }
 
       // From here the surface exists. Until a lease is returned, every failure
