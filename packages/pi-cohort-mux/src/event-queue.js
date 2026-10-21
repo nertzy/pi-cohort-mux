@@ -61,10 +61,17 @@ export function createEventQueue(initial = []) {
     async next() {
       if (queue.length) return { value: queue.shift(), done: false };
       if (released) return { done: true };
-      return new Promise((resolve) => { waiter = resolve; });
+      return new Promise((resolve) => {
+        waiter = resolve;
+      });
     },
-    async return() { finish(); return { done: true }; },
-    [Symbol.asyncIterator]() { return this; },
+    async return() {
+      finish();
+      return { done: true };
+    },
+    [Symbol.asyncIterator]() {
+      return this;
+    },
   };
 
   return {
@@ -72,9 +79,17 @@ export function createEventQueue(initial = []) {
     push,
     finish,
     resumeFromSuspension,
-    get suspended() { return suspended; },
-    get released() { return released; },
-    get queuedEvents() { return [...queue]; },
-    get lostAuthoritativeFact() { return lostAuthoritativeFact; },
+    get suspended() {
+      return suspended;
+    },
+    get released() {
+      return released;
+    },
+    get queuedEvents() {
+      return [...queue];
+    },
+    get lostAuthoritativeFact() {
+      return lostAuthoritativeFact;
+    },
   };
 }

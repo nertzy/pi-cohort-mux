@@ -26,8 +26,11 @@ npm ci
 ## Development
 
 ```sh
-npm test
+npm run check
 ```
+
+Lint needs Node.js 26 or newer and `actionlint`; see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Related projects
 

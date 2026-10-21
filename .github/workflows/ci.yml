@@ -17,6 +17,26 @@ env:
   CMUX_VERSION: 0.65.2
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.x
+          cache: npm
+      - run: npm ci
+      - name: Install actionlint
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash) \
+            1.7.12 "$RUNNER_TEMP/actionlint"
+          echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
+      - run: npm run lint
+
   test:
     name: ${{ matrix.os }} · Node ${{ matrix.node-version }} · tmux + pi
     runs-on: ${{ matrix.os }}
@@ -24,13 +44,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-26.04]
-        node-version: [22.x, 24.x, 26.x]
-        # tmux 3.4 can miss a pane's exit; keep one job on it so the spikes'
-        # tmux-version guards stay exercised.
-        include:
-          - os: ubuntu-24.04
-            node-version: 24.x
+        # tmux 3.4 (ubuntu-24.04) can miss a pane's exit; keep a job on it so
+        # the spikes' tmux-version guards stay exercised.
+        os: [ubuntu-26.04, ubuntu-24.04]
+        node-version: [26.x]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,7 +72,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.x
+          node-version: 26.x
           cache: npm
       - run: npm ci
       - run: npm install --global "@earendil-works/pi-coding-agent@$PI_VERSION"
@@ -89,9 +106,12 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Test against real cmux
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 10
         env:
           PI_COHORT_MUX_PRODUCTION_CMUX_SMOKE: "1"
+          # A freshly booted runner is short of CPU; one cmux call has taken
+          # over 10s. Lengthen the real-cmux tests' and backend's deadlines.
+          PI_COHORT_MUX_CMUX_DEADLINE_MS: "60000"
         run: |
           # One file at a time: both drive the same app, which they must not share.
           node --test --test-concurrency=1 --test-force-exit test/cmux-parity-spike.test.mjs test/production-cmux-smoke.test.mjs | tee "$RUNNER_TEMP/cmux-tests.log"

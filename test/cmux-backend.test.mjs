@@ -19,7 +19,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -39,9 +46,9 @@ class FakeEventsChild extends EventEmitter {
     // attached first in the current synchronous setup phase.
     setImmediate(() => {
       if (this._killed) return;
-      this.stdout.push(JSON.stringify(ackFrame) + "\n");
+      this.stdout.push(`${JSON.stringify(ackFrame)}\n`);
       for (const frame of extraFrames) {
-        this.stdout.push(JSON.stringify(frame) + "\n");
+        this.stdout.push(`${JSON.stringify(frame)}\n`);
       }
     });
   }
@@ -77,13 +84,22 @@ function fakeSnapshot() {
     workspace_ref: FAKE_WS_REF,
     pane_id: FAKE_PN_ID,
     pane_ref: FAKE_PN_REF,
-    surfaces: [{ id: FAKE_SF_ID, ref: FAKE_SF_REF, title: "pi-cohort-test", type: "terminal" }],
+    surfaces: [
+      {
+        id: FAKE_SF_ID,
+        ref: FAKE_SF_REF,
+        title: "pi-cohort-test",
+        type: "terminal",
+      },
+    ],
   };
 }
 
 // launch() requires the parent workspace identity from the environment.
 const savedParentWorkspace = process.env.CMUX_WORKSPACE_ID;
-before(() => { process.env.CMUX_WORKSPACE_ID = FAKE_WS_ID; });
+before(() => {
+  process.env.CMUX_WORKSPACE_ID = FAKE_WS_ID;
+});
 after(() => {
   if (savedParentWorkspace === undefined) delete process.env.CMUX_WORKSPACE_ID;
   else process.env.CMUX_WORKSPACE_ID = savedParentWorkspace;
@@ -124,16 +140,28 @@ function makeFakeIo({
   const fifoPayloads = [];
   // Mutable across calls so a test can simulate the helper pane collapsing
   // between launches; a successful create makes the pane exist again.
-  const behavior = { paneGone: false, closeNotFound, closeError, createError, fifoUnread, snapshotWithoutSurface, snapshotNotFound, snapshotError, onSnapshot: null, surfaceBusy: false, onCreate: null };
+  const behavior = {
+    paneGone: false,
+    closeNotFound,
+    closeError,
+    createError,
+    fifoUnread,
+    snapshotWithoutSurface,
+    snapshotNotFound,
+    snapshotError,
+    onSnapshot: null,
+    surfaceBusy: false,
+    onCreate: null,
+  };
 
-  async function execFile(cli, args, _opts) {
-    calls.push({ type: "exec", args: [...args] });
+  async function execFile(_cli, args, opts) {
+    calls.push({ type: "exec", args: [...args], timeout: opts?.timeout });
 
     if (args[0] === "--version") {
-      return { stdout: version + "\n", stderr: "" };
+      return { stdout: `${version}\n`, stderr: "" };
     }
     if (args[0] === "capabilities") {
-      return { stdout: JSON.stringify({ capabilities }) + "\n", stderr: "" };
+      return { stdout: `${JSON.stringify({ capabilities })}\n`, stderr: "" };
     }
     if (args[0] === "new-pane" || args[0] === "new-surface") {
       if (args[0] === "new-surface" && behavior.paneGone) {
@@ -148,13 +176,22 @@ function makeFakeIo({
       // Drain it so the background tee writer can complete.
       const cmdIdx = args.indexOf("--command");
       if (cmdIdx !== -1 && !behavior.fifoUnread) {
-        const fifoMatch = args[cmdIdx + 1].match(/'([^']+\/environment\.fifo)'/);
+        const fifoMatch = args[cmdIdx + 1].match(
+          /'([^']+\/environment\.fifo)'/,
+        );
         if (fifoMatch) fifoPayloads.push(await readFile(fifoMatch[1], "utf8"));
       }
       behavior.paneGone = false;
-      return { stdout: `OK ${FAKE_SF_REF} ${FAKE_PN_REF} ${FAKE_WS_REF}\n`, stderr: "" };
+      return {
+        stdout: `OK ${FAKE_SF_REF} ${FAKE_PN_REF} ${FAKE_WS_REF}\n`,
+        stderr: "",
+      };
     }
-    if (args[0] === "--id-format" && args[1] === "both" && args[2] === "list-pane-surfaces") {
+    if (
+      args[0] === "--id-format" &&
+      args[1] === "both" &&
+      args[2] === "list-pane-surfaces"
+    ) {
       const paneScoped = args.includes("--pane");
       await behavior.onSnapshot?.();
       if (behavior.snapshotNotFound || (paneScoped && behavior.paneGone)) {
@@ -166,13 +203,14 @@ function makeFakeIo({
       if (behavior.snapshotError) throw behavior.snapshotError;
       const snapshot = fakeSnapshot();
       if (behavior.snapshotWithoutSurface) snapshot.surfaces = [];
-      return { stdout: JSON.stringify(snapshot) + "\n", stderr: "" };
+      return { stdout: `${JSON.stringify(snapshot)}\n`, stderr: "" };
     }
     if (args[0] === "close-surface") {
       // cmux 0.65 refuses to close a surface whose process is still running.
       if (behavior.surfaceBusy && !args.includes("--force")) {
         throw Object.assign(new Error("close-surface failed"), {
-          stderr: "Error: confirmation_required: Surface has a running process; retry with force=true",
+          stderr:
+            "Error: confirmation_required: Surface has a running process; retry with force=true",
         });
       }
       if (behavior.closeNotFound) {
@@ -188,7 +226,7 @@ function makeFakeIo({
   }
 
   const children = [];
-  function spawn(cli, args, _opts) {
+  function spawn(_cli, args, _opts) {
     calls.push({ type: "spawn", args: [...args] });
     const child = new FakeEventsChild(FAKE_ACK, eventsFrames);
     children.push(child);
@@ -201,19 +239,33 @@ function makeFakeIo({
 /** The --command string of a create call, split back into its shell tokens. */
 function commandTokens(args) {
   const command = args[args.indexOf("--command") + 1];
-  return execFileSync("/bin/sh", ["-c", `printf '%s\\0' ${command}`]).toString().split("\0").slice(0, -1);
+  return execFileSync("/bin/sh", ["-c", `printf '%s\\0' ${command}`])
+    .toString()
+    .split("\0")
+    .slice(0, -1);
 }
 
-const pathExists = (path) => access(path).then(() => true, () => false);
+const pathExists = (path) =>
+  access(path).then(
+    () => true,
+    () => false,
+  );
 
 /** An execFile timeout as Node reports it: the child was killed. */
-const createTimeout = () => Object.assign(new Error("Command failed: cmux new-pane (timed out)"), { killed: true, signal: "SIGTERM", code: null });
+const createTimeout = () =>
+  Object.assign(new Error("Command failed: cmux new-pane (timed out)"), {
+    killed: true,
+    signal: "SIGTERM",
+    code: null,
+  });
 
 function withSocketPath(fn) {
   return async () => {
     const saved = process.env.CMUX_SOCKET_PATH;
     process.env.CMUX_SOCKET_PATH = "/tmp/cmux.sock";
-    try { await fn(); } finally {
+    try {
+      await fn();
+    } finally {
       if (saved === undefined) delete process.env.CMUX_SOCKET_PATH;
       else process.env.CMUX_SOCKET_PATH = saved;
     }
@@ -247,7 +299,9 @@ test("detect: parses version and capabilities from CLI output", async () => {
 });
 
 test("detect: available when CMUX_WORKSPACE_ID, CMUX_SOCKET_PATH set and events.v1 present", async () => {
-  const { execFile, spawn } = makeFakeIo({ capabilities: ["events.v1", "surface.health"] });
+  const { execFile, spawn } = makeFakeIo({
+    capabilities: ["events.v1", "surface.health"],
+  });
   const backend = createCmuxBackend({ execFile, spawn });
 
   const saved = {
@@ -261,32 +315,40 @@ test("detect: available when CMUX_WORKSPACE_ID, CMUX_SOCKET_PATH set and events.
     assert.equal(result.available, true);
     assert.ok(result.capabilities.includes("events.v1"));
   } finally {
-    if (saved.CMUX_WORKSPACE_ID === undefined) delete process.env.CMUX_WORKSPACE_ID;
+    if (saved.CMUX_WORKSPACE_ID === undefined)
+      delete process.env.CMUX_WORKSPACE_ID;
     else process.env.CMUX_WORKSPACE_ID = saved.CMUX_WORKSPACE_ID;
-    if (saved.CMUX_SOCKET_PATH === undefined) delete process.env.CMUX_SOCKET_PATH;
+    if (saved.CMUX_SOCKET_PATH === undefined)
+      delete process.env.CMUX_SOCKET_PATH;
     else process.env.CMUX_SOCKET_PATH = saved.CMUX_SOCKET_PATH;
   }
 });
 
-test("detect: confirms CMUX_WORKSPACE_ID names a live workspace", withSocketPath(async () => {
-  const { execFile, spawn, calls } = makeFakeIo();
-  const backend = createCmuxBackend({ execFile, spawn });
+test(
+  "detect: confirms CMUX_WORKSPACE_ID names a live workspace",
+  withSocketPath(async () => {
+    const { execFile, spawn, calls } = makeFakeIo();
+    const backend = createCmuxBackend({ execFile, spawn });
 
-  assert.equal((await backend.detect()).available, true);
-  const probe = calls.find((c) => c.args.includes("list-pane-surfaces"));
-  assert.ok(probe, "one read-only workspace probe");
-  assert.equal(probe.args[probe.args.indexOf("--workspace") + 1], FAKE_WS_ID);
-  assert.equal(probe.args.includes("--pane"), false);
-}));
+    assert.equal((await backend.detect()).available, true);
+    const probe = calls.find((c) => c.args.includes("list-pane-surfaces"));
+    assert.ok(probe, "one read-only workspace probe");
+    assert.equal(probe.args[probe.args.indexOf("--workspace") + 1], FAKE_WS_ID);
+    assert.equal(probe.args.includes("--pane"), false);
+  }),
+);
 
-test("detect: unavailable with a reason when CMUX_WORKSPACE_ID names no workspace", withSocketPath(async () => {
-  const { execFile, spawn } = makeFakeIo({ snapshotNotFound: true });
-  const backend = createCmuxBackend({ execFile, spawn });
+test(
+  "detect: unavailable with a reason when CMUX_WORKSPACE_ID names no workspace",
+  withSocketPath(async () => {
+    const { execFile, spawn } = makeFakeIo({ snapshotNotFound: true });
+    const backend = createCmuxBackend({ execFile, spawn });
 
-  const result = await backend.detect();
-  assert.equal(result.available, false);
-  assert.match(result.reason, /CMUX_WORKSPACE_ID .*not found/);
-}));
+    const result = await backend.detect();
+    assert.equal(result.available, false);
+    assert.match(result.reason, /CMUX_WORKSPACE_ID .*not found/);
+  }),
+);
 
 test("detect: unavailable when CMUX env markers absent", async () => {
   const { execFile, spawn } = makeFakeIo();
@@ -303,13 +365,17 @@ test("detect: unavailable when CMUX env markers absent", async () => {
     const result = await backend.detect();
     assert.equal(result.available, false);
   } finally {
-    if (saved.CMUX_WORKSPACE_ID !== undefined) process.env.CMUX_WORKSPACE_ID = saved.CMUX_WORKSPACE_ID;
-    if (saved.CMUX_SOCKET_PATH !== undefined) process.env.CMUX_SOCKET_PATH = saved.CMUX_SOCKET_PATH;
+    if (saved.CMUX_WORKSPACE_ID !== undefined)
+      process.env.CMUX_WORKSPACE_ID = saved.CMUX_WORKSPACE_ID;
+    if (saved.CMUX_SOCKET_PATH !== undefined)
+      process.env.CMUX_SOCKET_PATH = saved.CMUX_SOCKET_PATH;
   }
 });
 
 test("detect: unavailable and does not throw when CLI fails", async () => {
-  const brokenExec = async () => { throw new Error("spawn cmux ENOENT"); };
+  const brokenExec = async () => {
+    throw new Error("spawn cmux ENOENT");
+  };
   const backend = createCmuxBackend({ execFile: brokenExec, spawn: () => {} });
 
   const result = await backend.detect();
@@ -332,9 +398,11 @@ test("detect: unavailable when events.v1 capability absent from CLI response", a
     const result = await backend.detect();
     assert.equal(result.available, false);
   } finally {
-    if (saved.CMUX_WORKSPACE_ID === undefined) delete process.env.CMUX_WORKSPACE_ID;
+    if (saved.CMUX_WORKSPACE_ID === undefined)
+      delete process.env.CMUX_WORKSPACE_ID;
     else process.env.CMUX_WORKSPACE_ID = saved.CMUX_WORKSPACE_ID;
-    if (saved.CMUX_SOCKET_PATH === undefined) delete process.env.CMUX_SOCKET_PATH;
+    if (saved.CMUX_SOCKET_PATH === undefined)
+      delete process.env.CMUX_SOCKET_PATH;
     else process.env.CMUX_SOCKET_PATH = saved.CMUX_SOCKET_PATH;
   }
 });
@@ -354,7 +422,10 @@ test("launch: subscribes to events BEFORE creating the surface (spike ordering)"
   );
   assert.ok(spawnIdx >= 0, "events subscription was started");
   assert.ok(createIdx >= 0, "surface was created");
-  assert.ok(spawnIdx < createIdx, "events subscription started before surface create");
+  assert.ok(
+    spawnIdx < createIdx,
+    "events subscription started before surface create",
+  );
 
   await lease.release();
 });
@@ -364,9 +435,14 @@ test("launch: events subscription includes --no-heartbeat flag", async () => {
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest());
 
-  const eventsCall = calls.find((c) => c.type === "spawn" && c.args[0] === "events");
+  const eventsCall = calls.find(
+    (c) => c.type === "spawn" && c.args[0] === "events",
+  );
   assert.ok(eventsCall, "events spawn call present");
-  assert.ok(eventsCall.args.includes("--no-heartbeat"), "includes --no-heartbeat");
+  assert.ok(
+    eventsCall.args.includes("--no-heartbeat"),
+    "includes --no-heartbeat",
+  );
 
   await lease.release();
 });
@@ -405,15 +481,27 @@ test("launch: child command starts in the request cwd", async () => {
     (c) => c.type === "exec" && c.args[0] === "new-pane",
   );
   assert.ok(createCall, "new-pane call present");
-  const [sh, launcher, launchDir, fifo, cli, cwd, bootstrap, ...child] = commandTokens(createCall.args);
-  assert.equal(sh, "/bin/sh", "the login shell only starts /bin/sh; the launcher does the rest");
+  const [sh, launcher, launchDir, fifo, cli, cwd, bootstrap, ...child] =
+    commandTokens(createCall.args);
+  assert.equal(
+    sh,
+    "/bin/sh",
+    "the login shell only starts /bin/sh; the launcher does the rest",
+  );
   assert.match(launcher, /\/surface-launch\.sh$/);
   assert.equal(fifo, join(launchDir, "environment.fifo"));
-  assert.ok(cli === "cmux" || cli.startsWith("/"), "the surface can close itself with the same CLI");
+  assert.ok(
+    cli === "cmux" || cli.startsWith("/"),
+    "the surface can close itself with the same CLI",
+  );
   assert.equal(cwd, "/exact/cwd/test", "the launcher enters the request cwd");
   assert.match(bootstrap, /\/env-bootstrap\.sh$/);
   assert.deepEqual(child, ["pi", "--session", "session.jsonl"]);
-  assert.equal(await pathExists(launchDir), false, "launch directory removed after the hand-off");
+  assert.equal(
+    await pathExists(launchDir),
+    false,
+    "launch directory removed after the hand-off",
+  );
 
   await lease.release();
 });
@@ -425,14 +513,22 @@ test("launch: the launcher gets the CLI's absolute path, not the login shell's P
   await chmod(join(bin, "cmux"), 0o755);
   const savedPath = process.env.PATH;
   process.env.PATH = `/nonexistent-dir:${bin}:${savedPath}`;
-  t.after(() => { process.env.PATH = savedPath; });
+  t.after(() => {
+    process.env.PATH = savedPath;
+  });
   const { execFile, spawn, calls } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
 
   const lease = await backend.launch(makeRequest());
 
-  const createCall = calls.find((c) => c.type === "exec" && c.args[0] === "new-pane");
-  assert.equal(commandTokens(createCall.args)[4], join(bin, "cmux"), "a late surface can reach cmux even if its login shell cannot");
+  const createCall = calls.find(
+    (c) => c.type === "exec" && c.args[0] === "new-pane",
+  );
+  assert.equal(
+    commandTokens(createCall.args)[4],
+    join(bin, "cmux"),
+    "a late surface can reach cmux even if its login shell cannot",
+  );
   await lease.release();
 });
 
@@ -441,9 +537,15 @@ test("launch: an empty environment still goes through the launcher's FIFO", asyn
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest({ environment: {} }));
 
-  const createCall = calls.find((c) => c.type === "exec" && c.args[0] === "new-pane");
+  const createCall = calls.find(
+    (c) => c.type === "exec" && c.args[0] === "new-pane",
+  );
   assert.match(commandTokens(createCall.args)[1], /\/surface-launch\.sh$/);
-  assert.deepEqual(fifoPayloads, [""], "an abandoned launch is refused even without environment");
+  assert.deepEqual(
+    fifoPayloads,
+    [""],
+    "an abandoned launch is refused even without environment",
+  );
   await lease.release();
 });
 
@@ -469,17 +571,36 @@ test("launch: first child creates the right-side helper pane, later children bec
   const first = await backend.launch(makeRequest());
   const second = await backend.launch(makeRequest());
 
-  const newPaneCalls = calls.filter((c) => c.type === "exec" && c.args[0] === "new-pane");
-  const newSurfaceCalls = calls.filter((c) => c.type === "exec" && c.args[0] === "new-surface");
+  const newPaneCalls = calls.filter(
+    (c) => c.type === "exec" && c.args[0] === "new-pane",
+  );
+  const newSurfaceCalls = calls.filter(
+    (c) => c.type === "exec" && c.args[0] === "new-surface",
+  );
   assert.equal(newPaneCalls.length, 1, "exactly one helper pane created");
-  assert.equal(newSurfaceCalls.length, 1, "second child added as a surface tab");
+  assert.equal(
+    newSurfaceCalls.length,
+    1,
+    "second child added as a surface tab",
+  );
   assert.ok(newPaneCalls[0].args.includes("--direction"));
-  assert.ok(newPaneCalls[0].args.includes("right"), "helper pane opens to the right");
+  assert.ok(
+    newPaneCalls[0].args.includes("right"),
+    "helper pane opens to the right",
+  );
   const paneIdx = newSurfaceCalls[0].args.indexOf("--pane");
   assert.ok(paneIdx >= 0, "--pane present on new-surface");
-  assert.equal(newSurfaceCalls[0].args[paneIdx + 1], FAKE_PN_REF, "tab lands in the helper pane");
+  assert.equal(
+    newSurfaceCalls[0].args[paneIdx + 1],
+    FAKE_PN_REF,
+    "tab lands in the helper pane",
+  );
   const wsIdx = newPaneCalls[0].args.indexOf("--workspace");
-  assert.equal(newPaneCalls[0].args[wsIdx + 1], FAKE_WS_ID, "children live in the parent workspace");
+  assert.equal(
+    newPaneCalls[0].args[wsIdx + 1],
+    FAKE_WS_ID,
+    "children live in the parent workspace",
+  );
 
   await first.release();
   await second.release();
@@ -489,26 +610,53 @@ test("launch: concurrent first launches share one helper pane", async () => {
   const { execFile, spawn, calls } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
 
-  const leases = await Promise.all([backend.launch(makeRequest()), backend.launch(makeRequest()), backend.launch(makeRequest())]);
+  const leases = await Promise.all([
+    backend.launch(makeRequest()),
+    backend.launch(makeRequest()),
+    backend.launch(makeRequest()),
+  ]);
 
-  const creates = calls.filter((c) => c.type === "exec" && (c.args[0] === "new-pane" || c.args[0] === "new-surface"));
-  assert.deepEqual(creates.map((c) => c.args[0]), ["new-pane", "new-surface", "new-surface"], "one pane, then tabs in it");
-  for (const create of creates.slice(1)) assert.equal(create.args[create.args.indexOf("--pane") + 1], FAKE_PN_REF);
+  const creates = calls.filter(
+    (c) =>
+      c.type === "exec" &&
+      (c.args[0] === "new-pane" || c.args[0] === "new-surface"),
+  );
+  assert.deepEqual(
+    creates.map((c) => c.args[0]),
+    ["new-pane", "new-surface", "new-surface"],
+    "one pane, then tabs in it",
+  );
+  for (const create of creates.slice(1))
+    assert.equal(create.args[create.args.indexOf("--pane") + 1], FAKE_PN_REF);
   await Promise.all(leases.map((lease) => lease.release()));
 });
 
 test("launch: a failed helper-pane create does not block the next launch", async () => {
-  const { execFile, spawn, calls, behavior } = makeFakeIo({ createError: new Error("new-pane failed") });
+  const { execFile, spawn, calls, behavior } = makeFakeIo({
+    createError: new Error("new-pane failed"),
+  });
   const backend = createCmuxBackend({ execFile, spawn });
 
   // The second launch queues behind the first; the lock must not wedge.
-  const results = await Promise.allSettled([backend.launch(makeRequest()), backend.launch(makeRequest())]);
-  assert.deepEqual(results.map((r) => r.status), ["rejected", "rejected"]);
+  const results = await Promise.allSettled([
+    backend.launch(makeRequest()),
+    backend.launch(makeRequest()),
+  ]);
+  assert.deepEqual(
+    results.map((r) => r.status),
+    ["rejected", "rejected"],
+  );
   behavior.createError = null;
   const lease = await backend.launch(makeRequest());
 
-  const newPanes = calls.filter((c) => c.type === "exec" && c.args[0] === "new-pane");
-  assert.equal(newPanes.length, 3, "each launch retried pane creation after a failed create");
+  const newPanes = calls.filter(
+    (c) => c.type === "exec" && c.args[0] === "new-pane",
+  );
+  assert.equal(
+    newPanes.length,
+    3,
+    "each launch retried pane creation after a failed create",
+  );
   await lease.release();
 });
 
@@ -520,7 +668,9 @@ test("launch: collapsed helper pane is recreated instead of failing", async () =
   behavior.paneGone = true; // user closed the helper pane between launches
   const second = await backend.launch(makeRequest());
 
-  const newPaneCalls = calls.filter((c) => c.type === "exec" && c.args[0] === "new-pane");
+  const newPaneCalls = calls.filter(
+    (c) => c.type === "exec" && c.args[0] === "new-pane",
+  );
   assert.equal(newPaneCalls.length, 2, "a fresh helper pane was created");
 
   await first.release();
@@ -531,13 +681,27 @@ test("launch: inherited CMUX_* identity is scrubbed from the child environment",
   const { execFile, spawn, fifoPayloads } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const request = makeRequest({
-    environment: { CMUX_WORKSPACE_ID: "parent-ws", CMUX_SURFACE_ID: "parent-surface", SAFE_VALUE: "kept" },
+    environment: {
+      CMUX_WORKSPACE_ID: "parent-ws",
+      CMUX_SURFACE_ID: "parent-surface",
+      SAFE_VALUE: "kept",
+    },
   });
   const lease = await backend.launch(request);
 
-  assert.equal(fifoPayloads.length, 1, "environment delivered through the FIFO");
-  assert.ok(!fifoPayloads[0].includes("CMUX_"), `CMUX_* identity scrubbed, got: ${JSON.stringify(fifoPayloads[0])}`);
-  assert.ok(fifoPayloads[0].includes("SAFE_VALUE=kept"), "non-cmux variables pass through");
+  assert.equal(
+    fifoPayloads.length,
+    1,
+    "environment delivered through the FIFO",
+  );
+  assert.ok(
+    !fifoPayloads[0].includes("CMUX_"),
+    `CMUX_* identity scrubbed, got: ${JSON.stringify(fifoPayloads[0])}`,
+  );
+  assert.ok(
+    fifoPayloads[0].includes("SAFE_VALUE=kept"),
+    "non-cmux variables pass through",
+  );
 
   await lease.release();
 });
@@ -559,7 +723,10 @@ test("launch: command arg shell-escapes command and args", async () => {
   const cmd = createCall.args[cmdIdx + 1];
   // Should be shell-quoted tokens joined with space
   assert.ok(cmd.includes("/usr/bin/pi"), "command present in --command arg");
-  assert.ok(cmd.includes("path with spaces"), "path with spaces present (shell-quoted)");
+  assert.ok(
+    cmd.includes("path with spaces"),
+    "path with spaces present (shell-quoted)",
+  );
   assert.ok(cmd.includes("session.jsonl"), "session flag present");
   // Single-quote escaping: ensure the space arg is quoted
   assert.ok(cmd.includes("'") || cmd.includes('"'), "quoting applied");
@@ -590,7 +757,11 @@ test("launch: rejects empty-string env key loudly before any IO", async () => {
     backend.launch(request),
     /cannot encode an environment variable name/,
   );
-  assert.equal(calls.length, 0, "no execFile/spawn calls before key validation throws");
+  assert.equal(
+    calls.length,
+    0,
+    "no execFile/spawn calls before key validation throws",
+  );
 });
 
 test("launch: rejects env key with embedded whitespace loudly before any IO", async () => {
@@ -604,7 +775,11 @@ test("launch: rejects env key with embedded whitespace loudly before any IO", as
     backend.launch(request),
     /cannot encode an environment variable name/,
   );
-  assert.equal(calls.length, 0, "no execFile/spawn calls before key validation throws");
+  assert.equal(
+    calls.length,
+    0,
+    "no execFile/spawn calls before key validation throws",
+  );
 });
 
 test("launch: rejects env key starting with a digit loudly before any IO", async () => {
@@ -618,7 +793,11 @@ test("launch: rejects env key starting with a digit loudly before any IO", async
     backend.launch(request),
     /cannot encode an environment variable name/,
   );
-  assert.equal(calls.length, 0, "no execFile/spawn calls before key validation throws");
+  assert.equal(
+    calls.length,
+    0,
+    "no execFile/spawn calls before key validation throws",
+  );
 });
 
 // ─── launch: handle structure ─────────────────────────────────────────────────
@@ -631,8 +810,16 @@ test("launch: handle has SPI surface/display/data shape with UUID from snapshot"
   const handle = lease.handle;
   assert.equal(handle.backend, "cmux");
   assert.equal(handle.protocolVersion, 1);
-  assert.deepEqual(handle.surface, { kind: "surface", id: FAKE_SF_ID }, "surface has UUID from snapshot");
-  assert.equal(typeof handle.display.label, "string", "display.label is a string");
+  assert.deepEqual(
+    handle.surface,
+    { kind: "surface", id: FAKE_SF_ID },
+    "surface has UUID from snapshot",
+  );
+  assert.equal(
+    typeof handle.display.label,
+    "string",
+    "display.label is a string",
+  );
   assert.match(handle.display.hint, /\S/, "display.hint is non-empty");
 
   await lease.release();
@@ -645,8 +832,15 @@ test("launch: handle data contains the nine key set from the spike", async () =>
 
   const { data } = lease.handle;
   assert.deepEqual(Object.keys(data).sort(), [
-    "cwd", "paneId", "paneRef", "surfaceId", "surfaceRef", "title", "type",
-    "workspaceId", "workspaceRef",
+    "cwd",
+    "paneId",
+    "paneRef",
+    "surfaceId",
+    "surfaceRef",
+    "title",
+    "type",
+    "workspaceId",
+    "workspaceRef",
   ]);
   assert.equal(data.workspaceId, FAKE_WS_ID);
   assert.equal(data.workspaceRef, FAKE_WS_REF);
@@ -711,7 +905,12 @@ test("launch: push and events.next deliver a fact through the lease queue", asyn
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest());
 
-  lease.push({ type: "unknown", fact: "test-event", source: "mux", surface: lease.handle.surface });
+  lease.push({
+    type: "unknown",
+    fact: "test-event",
+    source: "mux",
+    surface: lease.handle.surface,
+  });
   const event = (await lease.events.next()).value;
   assert.equal(event.type, "unknown");
   assert.equal(event.fact, "test-event");
@@ -783,18 +982,29 @@ test("launch: overflow suspends queue and reconcile clears suspension with lost 
   assert.equal(reconciled.length, 2, "the lost fact, then fresh cmux evidence");
   assert.equal(reconciled[0].type, "exited");
   assert.equal(reconciled[0].status, 23);
-  assert.equal(reconciled[0].snapshot, undefined, "an observed event is not relabeled as snapshot evidence");
+  assert.equal(
+    reconciled[0].snapshot,
+    undefined,
+    "an observed event is not relabeled as snapshot evidence",
+  );
   assert.equal(reconciled[0].source, "mux");
   assert.deepEqual(reconciled[0].surface, lease.handle.surface);
   assert.equal(typeof reconciled[0].timestamp, "number");
   assert.equal(reconciled[1].fact, "snapshot");
   assert.equal(reconciled[1].snapshot, true);
   assert.equal(lease.suspended, false);
-  assert.deepEqual(await lease.reconcile().then((facts) => facts.map((f) => f.type)), ["unknown"], "the lost fact is delivered once");
+  assert.deepEqual(
+    await lease.reconcile().then((facts) => facts.map((f) => f.type)),
+    ["unknown"],
+    "the lost fact is delivered once",
+  );
 
   // New pushes work after reconcile
   lease.push({ type: "surface_closed", requested: true });
-  assert.deepEqual((await lease.events.next()).value, { type: "surface_closed", requested: true });
+  assert.deepEqual((await lease.events.next()).value, {
+    type: "surface_closed",
+    requested: true,
+  });
 
   await lease.release();
 });
@@ -842,21 +1052,40 @@ test("launch: breaking out of for-await releases the transport", async () => {
 // ─── launch: post-create failures roll back the created surface ──────────────
 
 function closeSurfaceCalls(calls) {
-  return calls.filter((c) => c.type === "exec" && c.args[0] === "close-surface");
+  return calls.filter(
+    (c) => c.type === "exec" && c.args[0] === "close-surface",
+  );
 }
 
 function assertRolledBack(calls, children) {
   const closes = closeSurfaceCalls(calls);
   assert.equal(closes.length, 1, "the created surface is closed");
-  assert.deepEqual(closes[0].args, ["close-surface", "--workspace", FAKE_WS_REF, "--surface", FAKE_SF_REF, "--force"]);
-  assert.ok(children.every((child) => child._exited), "events subscription stopped");
+  assert.deepEqual(closes[0].args, [
+    "close-surface",
+    "--workspace",
+    FAKE_WS_REF,
+    "--surface",
+    FAKE_SF_REF,
+    "--force",
+  ]);
+  assert.ok(
+    children.every((child) => child._exited),
+    "events subscription stopped",
+  );
 }
 
 test("launch: env hand-off that never completes times out and rolls back", async () => {
   const { execFile, spawn, calls, children } = makeFakeIo({ fifoUnread: true });
-  const backend = createCmuxBackend({ execFile, spawn, handoffDeadlineMs: 100 });
+  const backend = createCmuxBackend({
+    execFile,
+    spawn,
+    handoffDeadlineMs: 100,
+  });
 
-  await assert.rejects(withinDeadline(backend.launch(makeRequest())), /environment hand-off/);
+  await assert.rejects(
+    withinDeadline(backend.launch(makeRequest())),
+    /environment hand-off/,
+  );
   assertRolledBack(calls, children);
 });
 
@@ -872,7 +1101,9 @@ test("launch: aborting during the env hand-off rolls back", async () => {
 });
 
 test("launch: post-create snapshot failure rolls back the surface and subscription", async () => {
-  const { execFile, spawn, calls, children } = makeFakeIo({ snapshotError: new Error("snapshot timed out") });
+  const { execFile, spawn, calls, children } = makeFakeIo({
+    snapshotError: new Error("snapshot timed out"),
+  });
   const backend = createCmuxBackend({ execFile, spawn });
 
   await assert.rejects(backend.launch(makeRequest()), /snapshot timed out/);
@@ -880,28 +1111,45 @@ test("launch: post-create snapshot failure rolls back the surface and subscripti
 });
 
 test("launch: created surface missing from the snapshot is closed, not just unobserved", async () => {
-  const { execFile, spawn, calls, children } = makeFakeIo({ snapshotWithoutSurface: true });
+  const { execFile, spawn, calls, children } = makeFakeIo({
+    snapshotWithoutSurface: true,
+  });
   const backend = createCmuxBackend({ execFile, spawn });
 
-  await assert.rejects(backend.launch(makeRequest()), /not present in pane snapshot/);
+  await assert.rejects(
+    backend.launch(makeRequest()),
+    /not present in pane snapshot/,
+  );
   assertRolledBack(calls, children);
 });
 
 test("launch: rollback that finds the surface already gone keeps the original error", async () => {
-  const { execFile, spawn, calls, children } = makeFakeIo({ snapshotError: new Error("snapshot timed out"), closeNotFound: true });
+  const { execFile, spawn, calls, children } = makeFakeIo({
+    snapshotError: new Error("snapshot timed out"),
+    closeNotFound: true,
+  });
   const backend = createCmuxBackend({ execFile, spawn });
 
-  await assert.rejects(backend.launch(makeRequest()), (error) => error.message === "snapshot timed out");
+  await assert.rejects(
+    backend.launch(makeRequest()),
+    (error) => error.message === "snapshot timed out",
+  );
   assertRolledBack(calls, children);
 });
 
 test("launch: rollback close failure is reported alongside the original error", async () => {
-  const { execFile, spawn } = makeFakeIo({ snapshotError: new Error("snapshot timed out"), closeError: new Error("socket gone") });
+  const { execFile, spawn } = makeFakeIo({
+    snapshotError: new Error("snapshot timed out"),
+    closeError: new Error("socket gone"),
+  });
   const backend = createCmuxBackend({ execFile, spawn });
 
   await assert.rejects(backend.launch(makeRequest()), (error) => {
     assert.ok(error instanceof AggregateError);
-    assert.deepEqual(error.errors.map((e) => e.message), ["snapshot timed out", "socket gone"]);
+    assert.deepEqual(
+      error.errors.map((e) => e.message),
+      ["snapshot timed out", "socket gone"],
+    );
     assert.match(error.message, /surface:100/);
     return true;
   });
@@ -917,7 +1165,9 @@ function lateSurface(io, surfaceId, delayMs = 30) {
     seen.launchDir = launchDir;
     setTimeout(async () => {
       seen.fifoPresent = await pathExists(fifo);
-      await writeFile(join(launchDir, "surface-id"), `${surfaceId}\n`).catch(() => {});
+      await writeFile(join(launchDir, "surface-id"), `${surfaceId}\n`).catch(
+        () => {},
+      );
     }, delayMs);
   };
   return seen;
@@ -926,31 +1176,72 @@ function lateSurface(io, surfaceId, delayMs = 30) {
 test("launch: a create that times out after cmux made the surface closes that surface by its own id", async () => {
   const io = makeFakeIo({ createError: createTimeout() });
   const seen = lateSurface(io, "ORPHAN-UUID");
-  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 1_000 });
+  const backend = createCmuxBackend({
+    execFile: io.execFile,
+    spawn: io.spawn,
+    orphanGraceMs: 1_000,
+  });
 
-  await assert.rejects(backend.launch(makeRequest()), (error) => error.message.includes("timed out"));
+  await assert.rejects(backend.launch(makeRequest()), (error) =>
+    error.message.includes("timed out"),
+  );
 
   const closes = closeSurfaceCalls(io.calls);
-  assert.deepEqual(closes.map((c) => c.args), [["close-surface", "--workspace", FAKE_WS_ID, "--surface", "ORPHAN-UUID", "--force"]]);
-  assert.equal(seen.fifoPresent, false, "the FIFO is withdrawn before waiting, so the orphan cannot start the child");
+  assert.deepEqual(
+    closes.map((c) => c.args),
+    [
+      [
+        "close-surface",
+        "--workspace",
+        FAKE_WS_ID,
+        "--surface",
+        "ORPHAN-UUID",
+        "--force",
+      ],
+    ],
+  );
+  assert.equal(
+    seen.fifoPresent,
+    false,
+    "the FIFO is withdrawn before waiting, so the orphan cannot start the child",
+  );
   assert.equal(await pathExists(seen.launchDir), false);
-  assert.ok(io.children.every((child) => child._exited), "events subscription stopped");
+  assert.ok(
+    io.children.every((child) => child._exited),
+    "events subscription stopped",
+  );
 });
 
 test("launch: a timed-out create with no surface reporting rejects after the grace and closes nothing", async () => {
   const io = makeFakeIo({ createError: createTimeout() });
   const seen = lateSurface(io, "TOO-LATE", 200);
-  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 50 });
+  const backend = createCmuxBackend({
+    execFile: io.execFile,
+    spawn: io.spawn,
+    orphanGraceMs: 50,
+  });
 
   await assert.rejects(backend.launch(makeRequest()), /timed out/);
 
   assert.deepEqual(closeSurfaceCalls(io.calls), []);
-  assert.equal(await pathExists(seen.launchDir), false, "a later surface finds no launch directory and closes itself");
+  assert.equal(
+    await pathExists(seen.launchDir),
+    false,
+    "a later surface finds no launch directory and closes itself",
+  );
 });
 
 test("launch: a create cmux rejects outright does not wait for an orphan", async () => {
-  const io = makeFakeIo({ createError: Object.assign(new Error("new-pane failed"), { stderr: "Error: invalid_params: Missing or invalid direction" }) });
-  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 2_000 });
+  const io = makeFakeIo({
+    createError: Object.assign(new Error("new-pane failed"), {
+      stderr: "Error: invalid_params: Missing or invalid direction",
+    }),
+  });
+  const backend = createCmuxBackend({
+    execFile: io.execFile,
+    spawn: io.spawn,
+    orphanGraceMs: 2_000,
+  });
 
   const started = Date.now();
   await assert.rejects(backend.launch(makeRequest()), /new-pane failed/);
@@ -959,61 +1250,119 @@ test("launch: a create cmux rejects outright does not wait for an orphan", async
 });
 
 test("launch: an orphan that cannot be closed is reported alongside the create failure", async () => {
-  const io = makeFakeIo({ createError: createTimeout(), closeError: new Error("socket gone") });
+  const io = makeFakeIo({
+    createError: createTimeout(),
+    closeError: new Error("socket gone"),
+  });
   lateSurface(io, "ORPHAN-UUID");
-  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 1_000 });
+  const backend = createCmuxBackend({
+    execFile: io.execFile,
+    spawn: io.spawn,
+    orphanGraceMs: 1_000,
+  });
 
   await assert.rejects(backend.launch(makeRequest()), (error) => {
     assert.ok(error instanceof AggregateError);
-    assert.deepEqual(error.errors.map((e) => e.message), ["Command failed: cmux new-pane (timed out)", "socket gone"]);
+    assert.deepEqual(
+      error.errors.map((e) => e.message),
+      ["Command failed: cmux new-pane (timed out)", "socket gone"],
+    );
     assert.match(error.message, /ORPHAN-UUID/);
     return true;
   });
 });
 
-test("launch: an aborted create also collects its orphan, without a cool-down", withSocketPath(async () => {
-  const io = makeFakeIo({ createError: Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }) });
-  lateSurface(io, "ORPHAN-UUID");
-  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 1_000 });
+test(
+  "launch: an aborted create also collects its orphan, without a cool-down",
+  withSocketPath(async () => {
+    const io = makeFakeIo({
+      createError: Object.assign(new Error("The operation was aborted"), {
+        name: "AbortError",
+        code: "ABORT_ERR",
+      }),
+    });
+    lateSurface(io, "ORPHAN-UUID");
+    const backend = createCmuxBackend({
+      execFile: io.execFile,
+      spawn: io.spawn,
+      orphanGraceMs: 1_000,
+    });
 
-  await assert.rejects(backend.launch(makeRequest()), { name: "AbortError" });
+    await assert.rejects(backend.launch(makeRequest()), { name: "AbortError" });
 
-  assert.equal(closeSurfaceCalls(io.calls).length, 1);
-  assert.equal((await backend.detect()).available, true, "the caller cancelled; cmux is not unhealthy");
-}));
+    assert.equal(closeSurfaceCalls(io.calls).length, 1);
+    assert.equal(
+      (await backend.detect()).available,
+      true,
+      "the caller cancelled; cmux is not unhealthy",
+    );
+  }),
+);
 
 // ─── cool-down after a create timeout ────────────────────────────────────────
 
-test("detect: after a create timeout cmux is unavailable for the cool-down, without asking cmux", withSocketPath(async () => {
-  let clock = 1_000_000;
-  const io = makeFakeIo({ createError: createTimeout() });
-  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 10, cooldownMs: 60_000, now: () => clock });
-  await assert.rejects(backend.launch(makeRequest()));
-  const callsBefore = io.calls.length;
+test(
+  "detect: after a create timeout cmux is unavailable for the cool-down, without asking cmux",
+  withSocketPath(async () => {
+    let clock = 1_000_000;
+    const io = makeFakeIo({ createError: createTimeout() });
+    const backend = createCmuxBackend({
+      execFile: io.execFile,
+      spawn: io.spawn,
+      orphanGraceMs: 10,
+      cooldownMs: 60_000,
+      now: () => clock,
+    });
+    await assert.rejects(backend.launch(makeRequest()));
+    const callsBefore = io.calls.length;
 
-  const cooling = await backend.detect();
-  assert.equal(cooling.available, false);
-  assert.match(cooling.reason, /timed out.*60s/);
-  assert.equal(io.calls.length, callsBefore, "a cooling-down detect answers without cmux");
+    const cooling = await backend.detect();
+    assert.equal(cooling.available, false);
+    assert.match(cooling.reason, /timed out.*60s/);
+    assert.equal(
+      io.calls.length,
+      callsBefore,
+      "a cooling-down detect answers without cmux",
+    );
 
-  clock += 60_001;
-  io.behavior.createError = null;
-  assert.equal((await backend.detect()).available, true, "probes cmux again after the cool-down");
-}));
+    clock += 60_001;
+    io.behavior.createError = null;
+    assert.equal(
+      (await backend.detect()).available,
+      true,
+      "probes cmux again after the cool-down",
+    );
+  }),
+);
 
 test("launch: launches queued behind a timed-out create fail fast instead of each waiting out the deadline", async () => {
   const io = makeFakeIo({ createError: createTimeout() });
-  io.behavior.onCreate = () => new Promise((resolve) => setTimeout(resolve, 30));
-  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn, orphanGraceMs: 10 });
+  io.behavior.onCreate = () =>
+    new Promise((resolve) => setTimeout(resolve, 30));
+  const backend = createCmuxBackend({
+    execFile: io.execFile,
+    spawn: io.spawn,
+    orphanGraceMs: 10,
+  });
 
-  const results = await Promise.allSettled([backend.launch(makeRequest()), backend.launch(makeRequest())]);
+  const results = await Promise.allSettled([
+    backend.launch(makeRequest()),
+    backend.launch(makeRequest()),
+  ]);
 
-  assert.deepEqual(results.map((r) => r.status), ["rejected", "rejected"]);
+  assert.deepEqual(
+    results.map((r) => r.status),
+    ["rejected", "rejected"],
+  );
   // Whichever launch took the lock first timed out; the other failed fast.
   const messages = results.map((r) => r.reason.message).sort();
   assert.match(messages[0], /^Command failed: cmux new-pane \(timed out\)$/);
   assert.match(messages[1], /^cmux backend is cooling down/);
-  assert.equal(io.calls.filter((c) => c.type === "exec" && c.args[0] === "new-pane").length, 1);
+  assert.equal(
+    io.calls.filter((c) => c.type === "exec" && c.args[0] === "new-pane")
+      .length,
+    1,
+  );
 });
 
 // ─── events subscription lifecycle ───────────────────────────────────────────
@@ -1034,12 +1383,17 @@ class ScriptedEventsChild extends EventEmitter {
     setImmediate(() => {
       if (script === "spawn-error") {
         this._exited = true;
-        this.emit("error", Object.assign(new Error("spawn cmux ENOENT"), { code: "ENOENT" }));
+        this.emit(
+          "error",
+          Object.assign(new Error("spawn cmux ENOENT"), { code: "ENOENT" }),
+        );
         this.emit("close", -2, null);
         return;
       }
-      this.stdout.push(JSON.stringify(FAKE_ACK) + "\n");
-      setImmediate(() => this._end(...(script === "ack-exit0" ? [0, null] : [null, "SIGTERM"])));
+      this.stdout.push(`${JSON.stringify(FAKE_ACK)}\n`);
+      setImmediate(() =>
+        this._end(...(script === "ack-exit0" ? [0, null] : [null, "SIGTERM"])),
+      );
     });
   }
 
@@ -1052,7 +1406,9 @@ class ScriptedEventsChild extends EventEmitter {
     this.emit("close", code, signal);
   }
 
-  kill(signal) { setImmediate(() => this._end(null, signal)); }
+  kill(signal) {
+    setImmediate(() => this._end(null, signal));
+  }
 }
 
 function scriptedIo(script) {
@@ -1063,7 +1419,12 @@ function scriptedIo(script) {
 function withinDeadline(promise, ms = 2_000) {
   return Promise.race([
     promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`still pending after ${ms}ms`)), ms).unref()),
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`still pending after ${ms}ms`)),
+        ms,
+      ).unref(),
+    ),
   ]);
 }
 
@@ -1072,19 +1433,30 @@ test("launch: missing cmux binary (error + close, no exit) rejects instead of ha
   const backend = createCmuxBackend({ execFile, spawn });
 
   await assert.rejects(withinDeadline(backend.launch(makeRequest())), /ENOENT/);
-  assert.equal(calls.some((c) => c.args[0] === "new-pane"), false, "no surface created without an ack");
+  assert.equal(
+    calls.some((c) => c.args[0] === "new-pane"),
+    false,
+    "no surface created without an ack",
+  );
 });
 
 test("reattach: missing cmux binary returns unknown instead of hanging", async () => {
   const { execFile, spawn } = scriptedIo("spawn-error");
   const backend = createCmuxBackend({ execFile, spawn });
 
-  const result = await withinDeadline(backend.reattach({ data: { workspaceRef: FAKE_WS_REF, surfaceId: FAKE_SF_ID } }));
+  const result = await withinDeadline(
+    backend.reattach({
+      data: { workspaceRef: FAKE_WS_REF, surfaceId: FAKE_SF_ID },
+    }),
+  );
   assert.equal(result.status, "unknown");
   assert.match(result.reason, /ENOENT/);
 });
 
-for (const [script, description] of [["ack-exit0", "a clean exit 0"], ["ack-sigterm", "an external SIGTERM"]]) {
+for (const [script, description] of [
+  ["ack-exit0", "a clean exit 0"],
+  ["ack-sigterm", "an external SIGTERM"],
+]) {
   test(`launch: subscription ending with ${description} before the listener attaches is reported`, async () => {
     const { execFile, spawn } = scriptedIo(script);
     const backend = createCmuxBackend({ execFile, spawn });
@@ -1106,7 +1478,11 @@ test("launch: intentional release does not report a disconnect", async () => {
 
   await lease.release();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(lease.queuedEvents, [], "our own SIGTERM is not a disconnect");
+  assert.deepEqual(
+    lease.queuedEvents,
+    [],
+    "our own SIGTERM is not a disconnect",
+  );
 });
 
 // ─── launch: cmux events translated to facts ─────────────────────────────────
@@ -1138,10 +1514,27 @@ test("launch: events naming a foreign surface are dropped", async () => {
   // Children share the parent workspace; lifecycle events for other surfaces
   // must never reach this lease (bridge-parity ownership filtering).
   const foreign = [
-    { name: "surface.closed", surface_id: "surface-999", pane_id: FAKE_PN_ID, workspace_id: FAKE_WS_ID, type: "event" },
-    { name: "pane.closed", pane_id: "pane-999", workspace_id: FAKE_WS_ID, type: "event" },
+    {
+      name: "surface.closed",
+      surface_id: "surface-999",
+      pane_id: FAKE_PN_ID,
+      workspace_id: FAKE_WS_ID,
+      type: "event",
+    },
+    {
+      name: "pane.closed",
+      pane_id: "pane-999",
+      workspace_id: FAKE_WS_ID,
+      type: "event",
+    },
   ];
-  const own = { name: "surface.closed", surface_id: FAKE_SF_ID, pane_id: FAKE_PN_ID, workspace_id: FAKE_WS_ID, type: "event" };
+  const own = {
+    name: "surface.closed",
+    surface_id: FAKE_SF_ID,
+    pane_id: FAKE_PN_ID,
+    workspace_id: FAKE_WS_ID,
+    type: "event",
+  };
   const { execFile, spawn } = makeFakeIo({ eventsFrames: [...foreign, own] });
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest());
@@ -1154,7 +1547,9 @@ test("launch: events naming a foreign surface are dropped", async () => {
   assert.equal(event.source, "mux");
   // The two foreign frames must not be queued ahead of it; the queue is now empty.
   const next = lease.events.next();
-  const timeout = new Promise((resolve) => setTimeout(() => resolve("no further events"), 50));
+  const timeout = new Promise((resolve) =>
+    setTimeout(() => resolve("no further events"), 50),
+  );
   assert.equal(await Promise.race([next, timeout]), "no further events");
 
   await lease.release();
@@ -1162,7 +1557,11 @@ test("launch: events naming a foreign surface are dropped", async () => {
 
 test("launch: unrecognized cmux event translates to sanitized unknown fact without raw event text", async () => {
   // An event name that is not one of the known close variants.
-  const unknownEvent = { name: "workspace.renamed", type: "event", workspace_id: FAKE_WS_ID };
+  const unknownEvent = {
+    name: "workspace.renamed",
+    type: "event",
+    workspace_id: FAKE_WS_ID,
+  };
   const { execFile, spawn } = makeFakeIo({ eventsFrames: [unknownEvent] });
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest());
@@ -1189,7 +1588,9 @@ test("launch: unrecognized cmux event translates to sanitized unknown fact witho
 // ─── reconcile: fresh cmux evidence ───────────────────────────────────────────
 
 function snapshotCalls(calls) {
-  return calls.filter((c) => c.type === "exec" && c.args.includes("list-pane-surfaces")).length;
+  return calls.filter(
+    (c) => c.type === "exec" && c.args.includes("list-pane-surfaces"),
+  ).length;
 }
 
 test("reconcile: queries cmux and reports the surface present", async () => {
@@ -1200,15 +1601,32 @@ test("reconcile: queries cmux and reports the surface present", async () => {
 
   const facts = await lease.reconcile();
 
-  assert.equal(snapshotCalls(calls), before + 1, "reconcile takes a fresh snapshot");
-  assert.deepEqual(facts.map(({ type, fact, snapshot }) => ({ type, fact, snapshot })), [{ type: "unknown", fact: "snapshot", snapshot: true }]);
+  assert.equal(
+    snapshotCalls(calls),
+    before + 1,
+    "reconcile takes a fresh snapshot",
+  );
+  assert.deepEqual(
+    facts.map(({ type, fact, snapshot }) => ({ type, fact, snapshot })),
+    [{ type: "unknown", fact: "snapshot", snapshot: true }],
+  );
   assert.match(facts[0].reason, /present/);
   await lease.release();
 });
 
 for (const [setup, description] of [
-  [(b) => { b.snapshotWithoutSurface = true; }, "missing from a fresh snapshot"],
-  [(b) => { b.snapshotNotFound = true; }, "in a pane or workspace cmux no longer finds"],
+  [
+    (b) => {
+      b.snapshotWithoutSurface = true;
+    },
+    "missing from a fresh snapshot",
+  ],
+  [
+    (b) => {
+      b.snapshotNotFound = true;
+    },
+    "in a pane or workspace cmux no longer finds",
+  ],
 ]) {
   test(`reconcile: a surface ${description} is reported closed`, async () => {
     const { execFile, spawn, behavior } = makeFakeIo();
@@ -1218,7 +1636,14 @@ for (const [setup, description] of [
 
     const facts = await lease.reconcile();
 
-    assert.deepEqual(facts.map(({ type, requested, snapshot }) => ({ type, requested, snapshot })), [{ type: "surface_closed", requested: false, snapshot: true }]);
+    assert.deepEqual(
+      facts.map(({ type, requested, snapshot }) => ({
+        type,
+        requested,
+        snapshot,
+      })),
+      [{ type: "surface_closed", requested: false, snapshot: true }],
+    );
     assert.deepEqual(facts[0].surface, lease.handle.surface);
     await lease.release();
   });
@@ -1256,11 +1681,17 @@ test("reconcile: the queue resumes before the snapshot, so events during it are 
   const { execFile, spawn, behavior } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest());
-  for (const sinceMs of [1, 2]) lease.push({ type: "no_observed_activity", sinceMs });
+  for (const sinceMs of [1, 2])
+    lease.push({ type: "no_observed_activity", sinceMs });
   lease.push({ type: "surface_closed", requested: false });
   lease.push({ type: "exited", status: 0, signal: null }); // overflows
   for (let i = 0; i < 4; i += 1) await lease.events.next();
-  behavior.onSnapshot = () => lease.push({ type: "surface_closed", requested: true, marker: "during-snapshot" });
+  behavior.onSnapshot = () =>
+    lease.push({
+      type: "surface_closed",
+      requested: true,
+      marker: "during-snapshot",
+    });
 
   await lease.reconcile();
 
@@ -1271,7 +1702,13 @@ test("reconcile: the queue resumes before the snapshot, so events during it are 
 test("reconcile: a reattached lease also queries cmux", async () => {
   const { execFile, spawn, calls, behavior } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
-  const result = await backend.reattach({ data: { workspaceRef: FAKE_WS_REF, paneRef: FAKE_PN_REF, surfaceId: FAKE_SF_ID } });
+  const result = await backend.reattach({
+    data: {
+      workspaceRef: FAKE_WS_REF,
+      paneRef: FAKE_PN_REF,
+      surfaceId: FAKE_SF_ID,
+    },
+  });
   assert.equal(result.status, "present");
   behavior.snapshotWithoutSurface = true;
   const before = snapshotCalls(calls);
@@ -1287,7 +1724,11 @@ test("reconcile: a reattached lease also queries cmux", async () => {
 
 test("reattach: present — snapshot observation then real mux close event (no invented death events)", async () => {
   // Simulate the cmux events subscription emitting a real close event after ack.
-  const closeEvent = { name: "workspace.closed", workspace_id: FAKE_WS_ID, type: "event" };
+  const closeEvent = {
+    name: "workspace.closed",
+    workspace_id: FAKE_WS_ID,
+    type: "event",
+  };
   const { execFile, spawn } = makeFakeIo({ eventsFrames: [closeEvent] });
   const backend = createCmuxBackend({ execFile, spawn });
   const handle = {
@@ -1296,10 +1737,15 @@ test("reattach: present — snapshot observation then real mux close event (no i
     surface: { kind: "pane", id: FAKE_SF_ID },
     display: { label: `cmux:${FAKE_WS_REF}`, hint: `cmux:${FAKE_WS_REF}` },
     data: {
-      workspaceId: FAKE_WS_ID, workspaceRef: FAKE_WS_REF,
-      paneId: FAKE_PN_ID, paneRef: FAKE_PN_REF,
-      surfaceId: FAKE_SF_ID, surfaceRef: FAKE_SF_REF,
-      title: "test", type: "terminal", cwd: "/test/cwd",
+      workspaceId: FAKE_WS_ID,
+      workspaceRef: FAKE_WS_REF,
+      paneId: FAKE_PN_ID,
+      paneRef: FAKE_PN_REF,
+      surfaceId: FAKE_SF_ID,
+      surfaceRef: FAKE_SF_REF,
+      title: "test",
+      type: "terminal",
+      cwd: "/test/cwd",
     },
   };
 
@@ -1308,18 +1754,37 @@ test("reattach: present — snapshot observation then real mux close event (no i
 
   // First event: real snapshot observation — NOT a fabricated death event.
   const snapshotEvent = (await result.lease.events.next()).value;
-  assert.equal(snapshotEvent.snapshot, true, "first event must be snapshot observation");
+  assert.equal(
+    snapshotEvent.snapshot,
+    true,
+    "first event must be snapshot observation",
+  );
   assert.equal(snapshotEvent.source, "mux");
   assert.equal(typeof snapshotEvent.timestamp, "number");
   assert.deepEqual(snapshotEvent.surface, { kind: "surface", id: FAKE_SF_ID });
-  assert.notEqual(snapshotEvent.type, "surface_closed", "snapshot observation must not be a death event");
-  assert.notEqual(snapshotEvent.type, "exited", "snapshot observation must not be a death event");
+  assert.notEqual(
+    snapshotEvent.type,
+    "surface_closed",
+    "snapshot observation must not be a death event",
+  );
+  assert.notEqual(
+    snapshotEvent.type,
+    "exited",
+    "snapshot observation must not be a death event",
+  );
 
   // Second event: real surface_closed delivered by the live subscription (actual mux evidence).
   const liveEvent = (await result.lease.events.next()).value;
-  assert.equal(liveEvent.type, "surface_closed", "cmux close event must become surface_closed fact");
+  assert.equal(
+    liveEvent.type,
+    "surface_closed",
+    "cmux close event must become surface_closed fact",
+  );
   assert.equal(liveEvent.source, "mux");
-  assert.ok(liveEvent.timestamp >= snapshotEvent.timestamp, "live event timestamp must be >= snapshot");
+  assert.ok(
+    liveEvent.timestamp >= snapshotEvent.timestamp,
+    "live event timestamp must be >= snapshot",
+  );
 
   await result.lease.release();
 });
@@ -1334,10 +1799,15 @@ test("reattach: present — live surface emits no invented death events", async 
     surface: { kind: "pane", id: FAKE_SF_ID },
     display: { label: `cmux:${FAKE_WS_REF}`, hint: `cmux:${FAKE_WS_REF}` },
     data: {
-      workspaceId: FAKE_WS_ID, workspaceRef: FAKE_WS_REF,
-      paneId: FAKE_PN_ID, paneRef: FAKE_PN_REF,
-      surfaceId: FAKE_SF_ID, surfaceRef: FAKE_SF_REF,
-      title: "test", type: "terminal", cwd: "/test/cwd",
+      workspaceId: FAKE_WS_ID,
+      workspaceRef: FAKE_WS_REF,
+      paneId: FAKE_PN_ID,
+      paneRef: FAKE_PN_REF,
+      surfaceId: FAKE_SF_ID,
+      surfaceRef: FAKE_SF_REF,
+      title: "test",
+      type: "terminal",
+      cwd: "/test/cwd",
     },
   };
 
@@ -1347,8 +1817,16 @@ test("reattach: present — live surface emits no invented death events", async 
   // The only pre-populated event is a snapshot observation — never surface_closed or exited.
   const snapshotEvent = (await result.lease.events.next()).value;
   assert.equal(snapshotEvent.snapshot, true, "must be a snapshot observation");
-  assert.notEqual(snapshotEvent.type, "surface_closed", "live reattach must NOT emit invented surface_closed");
-  assert.notEqual(snapshotEvent.type, "exited", "live reattach must NOT emit invented exited");
+  assert.notEqual(
+    snapshotEvent.type,
+    "surface_closed",
+    "live reattach must NOT emit invented surface_closed",
+  );
+  assert.notEqual(
+    snapshotEvent.type,
+    "exited",
+    "live reattach must NOT emit invented exited",
+  );
 
   await result.lease.release();
 });
@@ -1366,15 +1844,20 @@ test("reattach: gone — list-pane-surfaces not_found maps to status=gone", asyn
 
 // cmux 0.65 reports a closed workspace addressed by ref without the
 // not_found token: "Error: Workspace ref not found: workspace:N".
-const staleWorkspaceRef = () => Object.assign(new Error("Command failed"), {
-  stderr: `Error: Workspace ref not found: ${FAKE_WS_REF}\n`,
-});
+const staleWorkspaceRef = () =>
+  Object.assign(new Error("Command failed"), {
+    stderr: `Error: Workspace ref not found: ${FAKE_WS_REF}\n`,
+  });
 
 test("reattach: gone — cmux 0.65 'Workspace ref not found' maps to status=gone", async () => {
-  const { execFile, spawn } = makeFakeIo({ snapshotError: staleWorkspaceRef() });
+  const { execFile, spawn } = makeFakeIo({
+    snapshotError: staleWorkspaceRef(),
+  });
   const backend = createCmuxBackend({ execFile, spawn });
 
-  const result = await backend.reattach({ data: { workspaceRef: FAKE_WS_REF, surfaceId: FAKE_SF_ID } });
+  const result = await backend.reattach({
+    data: { workspaceRef: FAKE_WS_REF, surfaceId: FAKE_SF_ID },
+  });
   assert.deepEqual(result, { status: "gone" });
 });
 
@@ -1396,7 +1879,9 @@ test("reattach: unknown — missing workspaceRef in handle yields status=unknown
   const { execFile, spawn } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
 
-  const result = await backend.reattach({ surface: { kind: "pane", id: "surface-1" } });
+  const result = await backend.reattach({
+    surface: { kind: "pane", id: "surface-1" },
+  });
   assert.equal(result.status, "unknown");
   assert.ok(/workspaceRef/i.test(result.reason));
 });
@@ -1433,7 +1918,7 @@ test("reattach: subscription exits before ack — returns unknown with non-empty
           this.stdout.push(null);
           this.stderr.push(null);
           this.emit("exit", 0, signal ?? "SIGTERM");
-        this.emit("close", 0, signal ?? "SIGTERM");
+          this.emit("close", 0, signal ?? "SIGTERM");
         }
       });
     }
@@ -1454,16 +1939,76 @@ test("reattach: subscription exits before ack — returns unknown with non-empty
 
   const result = await backend.reattach(handle);
 
-  assert.equal(result.status, "unknown", "status must be unknown when subscription cannot ack");
+  assert.equal(
+    result.status,
+    "unknown",
+    "status must be unknown when subscription cannot ack",
+  );
   assert.equal(typeof result.reason, "string", "reason must be a string");
   assert.ok(result.reason.length > 0, "reason must be non-empty");
-  assert.equal(result.lease, undefined, "no lease returned when subscription never acked");
+  assert.equal(
+    result.lease,
+    undefined,
+    "no lease returned when subscription never acked",
+  );
   // Exactly one subscription was started then stopped — no dangling process.
   assert.equal(spawnedChildren.length, 1, "one subscription child was spawned");
-  assert.ok(spawnedChildren[0]._exited, "subscription child must have exited (no process leak)");
+  assert.ok(
+    spawnedChildren[0]._exited,
+    "subscription child must have exited (no process leak)",
+  );
 });
 
 // ─── close ────────────────────────────────────────────────────────────────────
+
+// ─── deadlines ───────────────────────────────────────────────────────────────
+
+test(
+  "options: cliDeadlineMs bounds every cmux call the backend makes",
+  withSocketPath(async () => {
+    const { execFile, spawn, calls } = makeFakeIo();
+    const backend = createCmuxBackend({ execFile, spawn, cliDeadlineMs: 1234 });
+
+    await backend.detect();
+    const lease = await backend.launch(makeRequest());
+    const handle = lease.handle;
+    await lease.release();
+    await backend.close(handle, "explicit_cleanup");
+
+    const execs = calls.filter((c) => c.type === "exec");
+    assert.ok(
+      execs.some(
+        (c) => c.args.includes("new-pane") || c.args.includes("new-surface"),
+      ),
+      "a create call ran",
+    );
+    assert.ok(
+      execs.some((c) => c.args[0] === "close-surface"),
+      "close ran",
+    );
+    assert.deepEqual(
+      execs.filter((c) => c.timeout !== 1234).map((c) => c.args.join(" ")),
+      [],
+    );
+  }),
+);
+
+test(
+  "options: ackDeadlineMs bounds the events acknowledgement",
+  withSocketPath(async () => {
+    const { execFile, calls } = makeFakeIo();
+    const spawn = (_cli, args) => {
+      calls.push({ type: "spawn", args: [...args] });
+      return new FakeEventsChild({ type: "noise" });
+    };
+    const backend = createCmuxBackend({ execFile, spawn, ackDeadlineMs: 50 });
+
+    await assert.rejects(
+      withinDeadline(backend.launch(makeRequest()), 1_000),
+      /ack timed out/,
+    );
+  }),
+);
 
 test("close: calls close-surface with the handle's workspace and surface refs", async () => {
   const { execFile, spawn, calls } = makeFakeIo();
@@ -1479,8 +2024,14 @@ test("close: calls close-surface with the handle's workspace and surface refs", 
     (c) => c.type === "exec" && c.args[0] === "close-surface",
   );
   assert.ok(closeCall, "close-surface call present");
-  assert.equal(closeCall.args[closeCall.args.indexOf("--workspace") + 1], FAKE_WS_REF);
-  assert.equal(closeCall.args[closeCall.args.indexOf("--surface") + 1], FAKE_SF_REF);
+  assert.equal(
+    closeCall.args[closeCall.args.indexOf("--workspace") + 1],
+    FAKE_WS_REF,
+  );
+  assert.equal(
+    closeCall.args[closeCall.args.indexOf("--surface") + 1],
+    FAKE_SF_REF,
+  );
 });
 
 test("close: force-closes the owned surface even while its process is still running", async () => {
@@ -1492,15 +2043,27 @@ test("close: force-closes the owned surface even while its process is still runn
 
   await backend.close(lease.handle, "delivered");
 
-  const close = calls.filter((c) => c.type === "exec" && c.args[0] === "close-surface").at(-1);
-  assert.ok(close.args.includes("--force"), "close must not stall on cmux's confirmation");
-  assert.equal(close.args[close.args.indexOf("--surface") + 1], FAKE_SF_REF, "only the owned surface");
+  const close = calls
+    .filter((c) => c.type === "exec" && c.args[0] === "close-surface")
+    .at(-1);
+  assert.ok(
+    close.args.includes("--force"),
+    "close must not stall on cmux's confirmation",
+  );
+  assert.equal(
+    close.args[close.args.indexOf("--surface") + 1],
+    FAKE_SF_REF,
+    "only the owned surface",
+  );
 });
 
 test("close: not_found is treated as idempotent absence — no error thrown", async () => {
   const { execFile, spawn } = makeFakeIo({ closeNotFound: true });
   const backend = createCmuxBackend({ execFile, spawn });
-  const handle = { surface: { kind: "surface", id: FAKE_SF_ID }, data: { workspaceRef: FAKE_WS_REF, surfaceRef: FAKE_SF_REF } };
+  const handle = {
+    surface: { kind: "surface", id: FAKE_SF_ID },
+    data: { workspaceRef: FAKE_WS_REF, surfaceRef: FAKE_SF_REF },
+  };
 
   await assert.doesNotReject(backend.close(handle, "explicit_cleanup"));
 });
@@ -1508,7 +2071,10 @@ test("close: not_found is treated as idempotent absence — no error thrown", as
 test("close: can be called twice idempotently when CLI always returns not_found", async () => {
   const { execFile, spawn } = makeFakeIo({ closeNotFound: true });
   const backend = createCmuxBackend({ execFile, spawn });
-  const handle = { surface: { kind: "surface", id: FAKE_SF_ID }, data: { workspaceRef: FAKE_WS_REF, surfaceRef: FAKE_SF_REF } };
+  const handle = {
+    surface: { kind: "surface", id: FAKE_SF_ID },
+    data: { workspaceRef: FAKE_WS_REF, surfaceRef: FAKE_SF_REF },
+  };
 
   await backend.close(handle, "explicit_cleanup");
   await backend.close(handle, "explicit_cleanup");
@@ -1518,7 +2084,10 @@ test("close: can be called twice idempotently when CLI always returns not_found"
 test("close: cmux 0.65 'Workspace ref not found' is idempotent absence", async () => {
   const { execFile, spawn } = makeFakeIo({ closeError: staleWorkspaceRef() });
   const backend = createCmuxBackend({ execFile, spawn });
-  const handle = { surface: { kind: "surface", id: FAKE_SF_ID }, data: { workspaceRef: FAKE_WS_REF, surfaceRef: FAKE_SF_REF } };
+  const handle = {
+    surface: { kind: "surface", id: FAKE_SF_ID },
+    data: { workspaceRef: FAKE_WS_REF, surfaceRef: FAKE_SF_REF },
+  };
 
   await assert.doesNotReject(backend.close(handle, "explicit_cleanup"));
 });
@@ -1527,7 +2096,10 @@ test("close: non-not_found CLI errors propagate (strict handle-keyed close)", as
   const err = new Error("permission denied");
   const { execFile, spawn } = makeFakeIo({ closeError: err });
   const backend = createCmuxBackend({ execFile, spawn });
-  const handle = { surface: { kind: "surface", id: FAKE_SF_ID }, data: { workspaceRef: FAKE_WS_REF, surfaceRef: FAKE_SF_REF } };
+  const handle = {
+    surface: { kind: "surface", id: FAKE_SF_ID },
+    data: { workspaceRef: FAKE_WS_REF, surfaceRef: FAKE_SF_REF },
+  };
 
   await assert.rejects(
     backend.close(handle, "explicit_cleanup"),
@@ -1539,12 +2111,19 @@ test("close: no-op when handle has no surfaceRef (e.g. null data)", async () => 
   const { execFile, spawn, calls } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
 
-  await backend.close({ surface: { kind: "surface", id: "surface-after-restart" }, data: null }, "explicit_cleanup");
+  await backend.close(
+    { surface: { kind: "surface", id: "surface-after-restart" }, data: null },
+    "explicit_cleanup",
+  );
 
   const closeCall = calls.find(
     (c) => c.type === "exec" && c.args[0] === "close-surface",
   );
-  assert.equal(closeCall, undefined, "close-surface not called for handle without surfaceRef");
+  assert.equal(
+    closeCall,
+    undefined,
+    "close-surface not called for handle without surfaceRef",
+  );
 });
 
 // ─── SPI conformance: v1 metadata ────────────────────────────────────────────
@@ -1556,7 +2135,11 @@ test("cmux backend has required SPI metadata and methods", () => {
   assert.equal(backend.name, "cmux");
   assert.equal(backend.protocolVersion, 1);
   for (const method of ["detect", "launch", "reattach", "close"]) {
-    assert.equal(typeof backend[method], "function", `backend.${method} is a function`);
+    assert.equal(
+      typeof backend[method],
+      "function",
+      `backend.${method} is a function`,
+    );
   }
 });
 
@@ -1564,7 +2147,11 @@ test("cmux backend has required SPI metadata and methods", () => {
 
 function assertNoFunction(value, seen = new Set()) {
   if (!value || typeof value !== "object") {
-    assert.notEqual(typeof value, "function", "handle must not contain live functions");
+    assert.notEqual(
+      typeof value,
+      "function",
+      "handle must not contain live functions",
+    );
     return;
   }
   if (seen.has(value)) return;
@@ -1576,7 +2163,11 @@ function assertNoForbiddenKey(value, forbiddenKeys, seen = new Set()) {
   if (!value || typeof value !== "object" || seen.has(value)) return;
   seen.add(value);
   for (const [key, nested] of Object.entries(value)) {
-    assert.equal(forbiddenKeys.includes(key), false, `handle leaks forbidden key: ${key}`);
+    assert.equal(
+      forbiddenKeys.includes(key),
+      false,
+      `handle leaks forbidden key: ${key}`,
+    );
     assertNoForbiddenKey(nested, forbiddenKeys, seen);
   }
 }

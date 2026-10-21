@@ -35,9 +35,11 @@ client.on("connect", () => {
 client.setEncoding("utf8");
 client.on("data", (chunk) => {
   buffer += chunk;
-  let newline;
-  // eslint-disable-next-line no-cond-assign
-  while ((newline = buffer.indexOf("\n")) >= 0) {
+  for (
+    let newline = buffer.indexOf("\n");
+    newline >= 0;
+    newline = buffer.indexOf("\n")
+  ) {
     const line = buffer.slice(0, newline);
     buffer = buffer.slice(newline + 1);
     if (!line) continue;

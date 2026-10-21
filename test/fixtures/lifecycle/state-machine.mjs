@@ -5,7 +5,8 @@ export function createFakeScheduler() {
 
   return {
     schedule(name, callback) {
-      if (timers.has(name)) replacementCounts.set(name, (replacementCounts.get(name) ?? 0) + 1);
+      if (timers.has(name))
+        replacementCounts.set(name, (replacementCounts.get(name) ?? 0) + 1);
       timers.set(name, callback);
     },
     cancel(name) {
@@ -21,7 +22,11 @@ export function createFakeScheduler() {
   };
 }
 
-const terminalPhases = new Set(["paused", "requested_closure", "result_missing"]);
+const terminalPhases = new Set([
+  "paused",
+  "requested_closure",
+  "result_missing",
+]);
 
 const sourceFor = {
   surface_created: "mux",
@@ -49,7 +54,11 @@ export function createMachine({ scheduler }) {
     intent: "retain",
   };
 
-  const record = (event) => state.provenance.push({ type: event.type, source: event.source ?? sourceFor[event.type] });
+  const record = (event) =>
+    state.provenance.push({
+      type: event.type,
+      source: event.source ?? sourceFor[event.type],
+    });
   const activity = () => {
     delete state.facts.activity;
     scheduler.schedule("activity", () => {
@@ -144,10 +153,11 @@ export function createMachine({ scheduler }) {
         break;
       case "settled":
         state.facts.settled = true;
-        if (state.facts.result === undefined) scheduler.schedule("settled_result", () => {
-          state.facts.resultMissing = true;
-          derive();
-        });
+        if (state.facts.result === undefined)
+          scheduler.schedule("settled_result", () => {
+            state.facts.resultMissing = true;
+            derive();
+          });
         break;
       case "progress":
         state.facts.progress = event.value;
@@ -166,10 +176,11 @@ export function createMachine({ scheduler }) {
         break;
       case "shutdown_ack":
         state.facts.shutdownAck = true;
-        if (state.facts.shutdownRequested) scheduler.schedule("exit_after_shutdown", () => {
-          state.facts.exitUnknown = true;
-          derive();
-        });
+        if (state.facts.shutdownRequested)
+          scheduler.schedule("exit_after_shutdown", () => {
+            state.facts.exitUnknown = true;
+            derive();
+          });
         break;
       case "explicit_close":
         state.facts.explicitClose = true;

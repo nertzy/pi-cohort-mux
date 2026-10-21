@@ -1,17 +1,32 @@
 import assert from "node:assert/strict";
 
 const requiredMethods = ["detect", "launch", "reattach", "close"];
-const forbiddenHandleKeys = ["runId", "childId", "attempt", "task", "result", "output"];
+const forbiddenHandleKeys = [
+  "runId",
+  "childId",
+  "attempt",
+  "task",
+  "result",
+  "output",
+];
 function createRequest() {
   return {
-    command: "child-host", args: ["--session", "session.jsonl"], cwd: "/ordinary/cwd",
-    runId: "run-1", childId: "child-1", environment: { SAFE: "1" },
-    signal: new AbortController().signal, secretPipePath: "/private/fifo",
+    command: "child-host",
+    args: ["--session", "session.jsonl"],
+    cwd: "/ordinary/cwd",
+    runId: "run-1",
+    childId: "child-1",
+    environment: { SAFE: "1" },
+    signal: new AbortController().signal,
+    secretPipePath: "/private/fifo",
   };
 }
 
 export function registerExecutionBackendConformance({
-  test, name, createBackend, prohibitedValues = [],
+  test,
+  name,
+  createBackend,
+  prohibitedValues = [],
 }) {
   test(`${name}: exposes the v1 detection shape`, async () => {
     const backend = required(createBackend());
@@ -24,14 +39,20 @@ export function registerExecutionBackendConformance({
 
   test(`${name}: rejects an incompatible protocol version`, () => {
     const backend = required(createBackend());
-    assert.throws(() => required({ ...backend, protocolVersion: 2 }), /protocol version/);
+    assert.throws(
+      () => required({ ...backend, protocolVersion: 2 }),
+      /protocol version/,
+    );
   });
 
   test(`${name}: launches one observed surface at the exact cwd`, async () => {
     const backend = required(createBackend());
     const request = createRequest();
     const lease = await backend.launch(request);
-    assert.equal(lease.request?.cwd ?? backend.state?.lastRequest?.cwd, request.cwd);
+    assert.equal(
+      lease.request?.cwd ?? backend.state?.lastRequest?.cwd,
+      request.cwd,
+    );
     assert.deepEqual(backend.state?.trace?.slice(0, 2), ["observe", "start"]);
     assert.equal(backend.state?.launches?.length, 1);
     await lease.release();
@@ -39,9 +60,16 @@ export function registerExecutionBackendConformance({
 
   test(`${name}: buffers an immediate exit until after lease return`, async () => {
     const backend = required(createBackend());
-    const lease = await backend.launch({ ...createRequest(), immediateExit: true });
+    const lease = await backend.launch({
+      ...createRequest(),
+      immediateExit: true,
+    });
     assert.deepEqual((await lease.events.next()).value, {
-      type: "exited", status: 0, signal: null, source: "mux", surfaceId: lease.handle.id,
+      type: "exited",
+      status: 0,
+      signal: null,
+      source: "mux",
+      surfaceId: lease.handle.id,
     });
     await lease.release();
   });
@@ -57,23 +85,37 @@ export function registerExecutionBackendConformance({
     const backend = required(createBackend());
     const request = createRequest();
     const lease = await backend.launch(request);
-    lease.push({ type: "unknown", fact: "safe_fixture", source: "mux", surfaceId: lease.handle.id });
+    lease.push({
+      type: "unknown",
+      fact: "safe_fixture",
+      source: "mux",
+      surfaceId: lease.handle.id,
+    });
     const event = (await lease.events.next()).value;
     assert.equal(backend.state.lastRequest.secretPipePath, "/private/fifo");
-    assertNoProhibitedValue({
-      args: backend.state.lastRequest.args,
-      environment: backend.state.lastRequest.environment,
-      handle: lease.handle,
-      event,
-      persisted: backend.state.persisted,
-    }, prohibitedValues);
+    assertNoProhibitedValue(
+      {
+        args: backend.state.lastRequest.args,
+        environment: backend.state.lastRequest.environment,
+        handle: lease.handle,
+        event,
+        persisted: backend.state.persisted,
+      },
+      prohibitedValues,
+    );
     await lease.release();
   });
 
   test(`${name}: keeps mux events free of core correlation`, async () => {
     const backend = required(createBackend());
     const lease = await backend.launch(createRequest());
-    lease.push({ type: "exited", status: 0, signal: null, source: "mux", surfaceId: lease.handle.id });
+    lease.push({
+      type: "exited",
+      status: 0,
+      signal: null,
+      source: "mux",
+      surfaceId: lease.handle.id,
+    });
     const event = (await lease.events.next()).value;
     assert.equal(event.source, "mux");
     assert.equal(event.surfaceId, lease.handle.id);
@@ -88,11 +130,15 @@ export function registerExecutionBackendConformance({
     interleaved.push({ type: "no_observed_activity", sinceMs: 0 });
     interleaved.push({ type: "surface_closed", requested: false });
     interleaved.push({ type: "no_observed_activity", sinceMs: 1 });
-    assert.deepEqual(interleaved.queuedEvents, [
-      { type: "no_observed_activity", sinceMs: 0 },
-      { type: "surface_closed", requested: false },
-      { type: "no_observed_activity", sinceMs: 1 },
-    ], "an advisory fact cannot overwrite an entity fact at the queue tail");
+    assert.deepEqual(
+      interleaved.queuedEvents,
+      [
+        { type: "no_observed_activity", sinceMs: 0 },
+        { type: "surface_closed", requested: false },
+        { type: "no_observed_activity", sinceMs: 1 },
+      ],
+      "an advisory fact cannot overwrite an entity fact at the queue tail",
+    );
     await interleaved.release();
 
     const lease = await backend.launch(createRequest());
@@ -112,23 +158,36 @@ export function registerExecutionBackendConformance({
       { type: "surface_closed", requested: false },
       { type: "unknown", fact: "event_stream", reason: "overflow" },
     ]);
-    assert.deepEqual([
-      (await lease.events.next()).value,
-      (await lease.events.next()).value,
-      (await lease.events.next()).value,
-      (await lease.events.next()).value,
-    ], [
-      { type: "no_observed_activity", sinceMs: 1 },
-      { type: "no_observed_activity", sinceMs: 3 },
-      { type: "surface_closed", requested: false },
-      { type: "unknown", fact: "event_stream", reason: "overflow" },
+    assert.deepEqual(
+      [
+        (await lease.events.next()).value,
+        (await lease.events.next()).value,
+        (await lease.events.next()).value,
+        (await lease.events.next()).value,
+      ],
+      [
+        { type: "no_observed_activity", sinceMs: 1 },
+        { type: "no_observed_activity", sinceMs: 3 },
+        { type: "surface_closed", requested: false },
+        { type: "unknown", fact: "event_stream", reason: "overflow" },
+      ],
+    );
+    assert.deepEqual(await lease.reconcile(), [
+      {
+        type: "exited",
+        status: 23,
+        signal: null,
+        source: "mux",
+        surfaceId: lease.handle.id,
+        snapshot: true,
+      },
     ]);
-    assert.deepEqual(await lease.reconcile(), [{
-      type: "exited", status: 23, signal: null, source: "mux", surfaceId: lease.handle.id, snapshot: true,
-    }]);
     assert.equal(lease.suspended, false);
     lease.push({ type: "surface_closed", requested: true });
-    assert.deepEqual((await lease.events.next()).value, { type: "surface_closed", requested: true });
+    assert.deepEqual((await lease.events.next()).value, {
+      type: "surface_closed",
+      requested: true,
+    });
     assert.deepEqual(lease.queuedEvents, []);
     await lease.release();
   });
@@ -150,8 +209,13 @@ export function registerExecutionBackendConformance({
     assert.equal(present.status, "present");
     assert.equal((await present.lease.events.next()).value.snapshot, true);
     assert.equal((await present.lease.events.next()).value.live, true);
-    assert.deepEqual(await backend.reattach({ id: "gone" }), { status: "gone" });
-    assert.deepEqual(await backend.reattach({ id: "unknown" }), { status: "unknown", reason: "native unavailable" });
+    assert.deepEqual(await backend.reattach({ id: "gone" }), {
+      status: "gone",
+    });
+    assert.deepEqual(await backend.reattach({ id: "unknown" }), {
+      status: "unknown",
+      reason: "native unavailable",
+    });
     await present.lease.release();
   });
 
@@ -177,7 +241,11 @@ export function registerExecutionBackendConformance({
 
 function assertOpaqueHandle(handle, prohibitedValues) {
   assert.equal(typeof handle.id, "string");
-  assert.match(handle.display, /\S/, "handle must include an actionable display hint");
+  assert.match(
+    handle.display,
+    /\S/,
+    "handle must include an actionable display hint",
+  );
   assert.doesNotThrow(() => JSON.parse(JSON.stringify(handle)));
   assertNoFunction(handle);
   assertNoForbiddenKey(handle, forbiddenHandleKeys);
@@ -186,7 +254,11 @@ function assertOpaqueHandle(handle, prohibitedValues) {
 
 function assertNoFunction(value, seen = new Set()) {
   if (!value || typeof value !== "object") {
-    assert.notEqual(typeof value, "function", "handle must not contain live functions");
+    assert.notEqual(
+      typeof value,
+      "function",
+      "handle must not contain live functions",
+    );
     return;
   }
   if (seen.has(value)) return;
@@ -204,10 +276,15 @@ function assertNoForbiddenKey(value, forbiddenKeys, seen = new Set()) {
 }
 
 function assertNoProhibitedValue(value, prohibitedValues, seen = new Set()) {
-  if (prohibitedValues.length === 0 || value === undefined || value === null) return;
+  if (prohibitedValues.length === 0 || value === undefined || value === null)
+    return;
   if (typeof value !== "object") {
     for (const prohibited of prohibitedValues) {
-      assert.notEqual(value, prohibited, "surface artifact leaks prohibited value");
+      assert.notEqual(
+        value,
+        prohibited,
+        "surface artifact leaks prohibited value",
+      );
     }
     return;
   }
@@ -219,8 +296,20 @@ function assertNoProhibitedValue(value, prohibitedValues, seen = new Set()) {
 }
 
 function required(backend) {
-  assert.ok(backend && typeof backend === "object", "backend must be an object");
-  for (const method of requiredMethods) assert.equal(typeof backend[method], "function", `backend.${method} must be a function`);
-  assert.equal(backend.protocolVersion, 1, "backend protocol version must be v1");
+  assert.ok(
+    backend && typeof backend === "object",
+    "backend must be an object",
+  );
+  for (const method of requiredMethods)
+    assert.equal(
+      typeof backend[method],
+      "function",
+      `backend.${method} must be a function`,
+    );
+  assert.equal(
+    backend.protocolVersion,
+    1,
+    "backend protocol version must be v1",
+  );
   return backend;
 }

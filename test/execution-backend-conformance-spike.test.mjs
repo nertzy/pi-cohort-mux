@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import test from "node:test";
 import { createConformanceBackend } from "./fixtures/execution-backend/contract.mjs";
 import { registerExecutionBackendConformance } from "./fixtures/execution-backend/testkit.mjs";
@@ -22,14 +22,26 @@ test("conformance suite registers concrete cases", () => {
 });
 
 test("an external Node test can import the kit and rejects broken backends", async () => {
-  const testkit = new URL("./fixtures/execution-backend/testkit.mjs", import.meta.url).href;
-  const contract = new URL("./fixtures/execution-backend/contract.mjs", import.meta.url).href;
+  const testkit = new URL(
+    "./fixtures/execution-backend/testkit.mjs",
+    import.meta.url,
+  ).href;
+  const contract = new URL(
+    "./fixtures/execution-backend/contract.mjs",
+    import.meta.url,
+  ).href;
 
-  await assertRejectedExternalConformance(testkit, `
+  await assertRejectedExternalConformance(
+    testkit,
+    `
     registerExecutionBackendConformance({ test, name: "broken", createBackend: () => ({}) });
-  `, /detect|backend/i);
+  `,
+    /detect|backend/i,
+  );
 
-  await assertRejectedExternalConformance(testkit, `
+  await assertRejectedExternalConformance(
+    testkit,
+    `
     import { createConformanceBackend } from ${JSON.stringify(contract)};
     const createBackend = () => {
       const backend = createConformanceBackend();
@@ -42,9 +54,13 @@ test("an external Node test can import the kit and rejects broken backends", asy
       return backend;
     };
     registerExecutionBackendConformance({ test, name: "function handle", createBackend });
-  `, /live functions/i);
+  `,
+    /live functions/i,
+  );
 
-  await assertExternalConformance(testkit, `
+  await assertExternalConformance(
+    testkit,
+    `
     import assert from "node:assert/strict";
     import { createConformanceBackend } from ${JSON.stringify(contract)};
     const createMutatingBackend = () => {
@@ -73,9 +89,13 @@ test("an external Node test can import the kit and rejects broken backends", asy
     registerExecutionBackendConformance({
       test, name: "independent", createBackend: createIndependentBackend,
     });
-  `, 24);
+  `,
+    24,
+  );
 
-  await assertRejectedExternalConformance(testkit, `
+  await assertRejectedExternalConformance(
+    testkit,
+    `
     import { createConformanceBackend } from ${JSON.stringify(contract)};
     const sentinel = ${JSON.stringify(secret)};
     const createBackend = () => {
@@ -97,7 +117,9 @@ test("an external Node test can import the kit and rejects broken backends", asy
     registerExecutionBackendConformance({
       test, name: "leaky", createBackend, prohibitedValues: [sentinel],
     });
-  `, /prohibited value|live functions/i);
+  `,
+    /prohibited value|live functions/i,
+  );
 });
 
 async function assertExternalConformance(testkit, body, expectedTestCount) {
@@ -116,11 +138,14 @@ async function runExternalConformance(testkit, body) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "pi-cohort-mux-kit-"));
   const externalTest = path.join(directory, "external.test.mjs");
   try {
-    await writeFile(externalTest, `
+    await writeFile(
+      externalTest,
+      `
       import test from "node:test";
       import { registerExecutionBackendConformance } from ${JSON.stringify(testkit)};
       ${body}
-    `);
+    `,
+    );
     return await processResult(process.execPath, ["--test", externalTest]);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -135,8 +160,12 @@ function processResult(command, arguments_) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
-    child.stdout.on("data", (chunk) => { output += chunk; });
-    child.stderr.on("data", (chunk) => { output += chunk; });
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      output += chunk;
+    });
     child.once("error", reject);
     child.once("close", (code) => resolve({ code, output }));
   });

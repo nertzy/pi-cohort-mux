@@ -12,11 +12,25 @@ const execFile = promisify(execFileCallback);
  * a dead pane listed. Stops quietly when `signal` aborts. `run` is injectable
  * for tests.
  */
-export async function pollPaneDead(server, pane, { signal, interval = 100, run = execFile } = {}) {
+export async function pollPaneDead(
+  server,
+  pane,
+  { signal, interval = 100, run = execFile } = {},
+) {
   while (!signal?.aborted) {
     const { stdout } = await run(
       "tmux",
-      ["-L", server, "-f", "/dev/null", "display-message", "-p", "-t", pane, "#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}"],
+      [
+        "-L",
+        server,
+        "-f",
+        "/dev/null",
+        "display-message",
+        "-p",
+        "-t",
+        pane,
+        "#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}",
+      ],
       { timeout: 5_000 },
     );
     const [dead, status, deathSignal] = stdout.trim().split("|");
