@@ -6,9 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { cmuxDeadline } from "./support/cmux-deadline.mjs";
 
 const execFile = promisify(execFileCallback);
-const cliDeadline = 5_000;
+const cliDeadline = cmuxDeadline(5_000);
 const disappearancePoll = 100;
 const reporterPath = path.resolve("test/fixtures/cmux-parity/reporter.mjs");
 

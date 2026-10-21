@@ -106,9 +106,12 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Test against real cmux
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 10
         env:
           PI_COHORT_MUX_PRODUCTION_CMUX_SMOKE: "1"
+          # A freshly booted runner is short of CPU; one cmux call has taken
+          # over 10s. Lengthen the real-cmux tests' and backend's deadlines.
+          PI_COHORT_MUX_CMUX_DEADLINE_MS: "60000"
         run: |
           # One file at a time: both drive the same app, which they must not share.
           node --test --test-concurrency=1 --test-force-exit test/cmux-parity-spike.test.mjs test/production-cmux-smoke.test.mjs | tee "$RUNNER_TEMP/cmux-tests.log"

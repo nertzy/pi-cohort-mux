@@ -34,13 +34,21 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
+import { cmuxDeadline } from "./support/cmux-deadline.mjs";
 
 const execFile = promisify(execFileCallback);
 
 const SMOKE_FLAG = "PI_COHORT_MUX_PRODUCTION_CMUX_SMOKE";
-const EVIDENCE_DEADLINE_MS = 15_000;
-const CLI_DEADLINE_MS = 10_000;
-const DISAPPEARANCE_DEADLINE_MS = 5_000;
+const EVIDENCE_DEADLINE_MS = cmuxDeadline(15_000);
+const CLI_DEADLINE_MS = cmuxDeadline(10_000);
+const DISAPPEARANCE_DEADLINE_MS = cmuxDeadline(5_000);
+// The backend's own deadlines, lengthened the same way where cmux is slow.
+const BACKEND_DEADLINES = {
+  cliDeadlineMs: cmuxDeadline(10_000),
+  ackDeadlineMs: cmuxDeadline(10_000),
+  handoffDeadlineMs: cmuxDeadline(10_000),
+  orphanGraceMs: cmuxDeadline(3_000),
+};
 const DISAPPEARANCE_POLL_MS = 100;
 const SENTINEL_WRITER = fileURLToPath(
   new URL("fixtures/production-smoke/sentinel-writer.mjs", import.meta.url),
@@ -55,7 +63,7 @@ const optedIn = process.env[SMOKE_FLAG] === "1";
 let probe = { available: false, version: "", capabilities: [] };
 if (optedIn) {
   try {
-    probe = await createCmuxBackend().detect();
+    probe = await createCmuxBackend(BACKEND_DEADLINES).detect();
   } catch (error) {
     probe = { available: false, version: "", capabilities: [], error };
   }
@@ -138,7 +146,7 @@ test("production cmux backend: launch → evidence → release-retains → reatt
 }, async () => {
   // A non-empty environment exercises the owner-only FIFO bootstrap. The
   // child opens that FIFO; cmux receives only its path in the command argv.
-  const backend = createCmuxBackend(); // real cmux CLI — no injection
+  const backend = createCmuxBackend(BACKEND_DEADLINES); // real cmux CLI — no injection
 
   // State tracked across the try/finally so cleanup is unconditional.
   let tempDir;
