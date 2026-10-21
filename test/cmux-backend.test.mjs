@@ -154,8 +154,8 @@ function makeFakeIo({
     onCreate: null,
   };
 
-  async function execFile(_cli, args, _opts) {
-    calls.push({ type: "exec", args: [...args] });
+  async function execFile(_cli, args, opts) {
+    calls.push({ type: "exec", args: [...args], timeout: opts?.timeout });
 
     if (args[0] === "--version") {
       return { stdout: `${version}\n`, stderr: "" };
@@ -1960,6 +1960,55 @@ test("reattach: subscription exits before ack — returns unknown with non-empty
 });
 
 // ─── close ────────────────────────────────────────────────────────────────────
+
+// ─── deadlines ───────────────────────────────────────────────────────────────
+
+test(
+  "options: cliDeadlineMs bounds every cmux call the backend makes",
+  withSocketPath(async () => {
+    const { execFile, spawn, calls } = makeFakeIo();
+    const backend = createCmuxBackend({ execFile, spawn, cliDeadlineMs: 1234 });
+
+    await backend.detect();
+    const lease = await backend.launch(makeRequest());
+    const handle = lease.handle;
+    await lease.release();
+    await backend.close(handle, "explicit_cleanup");
+
+    const execs = calls.filter((c) => c.type === "exec");
+    assert.ok(
+      execs.some(
+        (c) => c.args.includes("new-pane") || c.args.includes("new-surface"),
+      ),
+      "a create call ran",
+    );
+    assert.ok(
+      execs.some((c) => c.args[0] === "close-surface"),
+      "close ran",
+    );
+    assert.deepEqual(
+      execs.filter((c) => c.timeout !== 1234).map((c) => c.args.join(" ")),
+      [],
+    );
+  }),
+);
+
+test(
+  "options: ackDeadlineMs bounds the events acknowledgement",
+  withSocketPath(async () => {
+    const { execFile, calls } = makeFakeIo();
+    const spawn = (_cli, args) => {
+      calls.push({ type: "spawn", args: [...args] });
+      return new FakeEventsChild({ type: "noise" });
+    };
+    const backend = createCmuxBackend({ execFile, spawn, ackDeadlineMs: 50 });
+
+    await assert.rejects(
+      withinDeadline(backend.launch(makeRequest()), 1_000),
+      /ack timed out/,
+    );
+  }),
+);
 
 test("close: calls close-surface with the handle's workspace and surface refs", async () => {
   const { execFile, spawn, calls } = makeFakeIo();
