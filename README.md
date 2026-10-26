@@ -17,6 +17,10 @@ install the adapter entrypoint only;
 `pi-cohort` remains the separately activated host and owns backend selection,
 orchestration, control, reporting, and detached reload.
 
+In Pi's transcript, the adapter adds an accent `[cmux]` badge to a `subagent`
+call that ran in a cmux surface. The call's frame keeps Pi's usual pending,
+success, and error colors.
+
 For workspace development:
 
 ```sh

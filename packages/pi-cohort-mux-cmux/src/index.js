@@ -1,6 +1,7 @@
 import { registerExecutionBackend } from "pi-cohort/execution-backend";
 
 import { createCmuxExecutionBackend } from "./cmux-backend.js";
+import { subagentBadgeResolver } from "./tool-color.js";
 
 export {
   createCmuxBackend,
@@ -14,6 +15,7 @@ const reload = Object.freeze({
   factoryExport: "createCmuxExecutionBackend",
 });
 
-export default function installPiCohortMux() {
+export default function installPiCohortMux(pi) {
+  pi?.registerToolRenderer?.(subagentBadgeResolver);
   return registerExecutionBackend(createCmuxExecutionBackend(), { reload });
 }
