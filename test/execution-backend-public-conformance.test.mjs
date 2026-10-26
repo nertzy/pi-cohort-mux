@@ -21,7 +21,11 @@ import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backe
 
 const jiti = createJiti(import.meta.url);
 const kit = await jiti.import("pi-cohort/execution-backend-testkit");
-const { registerExecutionBackendConformance, wrapWithConformanceHarness, CONFORMANCE_TEST_COUNT } = kit;
+const {
+  registerExecutionBackendConformance,
+  wrapWithConformanceHarness,
+  CONFORMANCE_TEST_COUNT,
+} = kit;
 
 // ─── Fake events subprocess ───────────────────────────────────────────────────
 
@@ -34,7 +38,11 @@ class FakeEventsChild extends EventEmitter {
     setImmediate(() => {
       if (!this._killed) {
         this.stdout.push(
-          JSON.stringify({ type: "ack", subscription_id: "conf-sub", version: 1 }) + "\n",
+          `${JSON.stringify({
+            type: "ack",
+            subscription_id: "conf-sub",
+            version: 1,
+          })}\n`,
         );
       }
     });
@@ -101,20 +109,28 @@ function makeStatefulFakeIo() {
       return { stdout: "cmux 0.64.22\n", stderr: "" };
     }
     if (args[0] === "capabilities") {
-      return { stdout: JSON.stringify({ capabilities: ["events.v1"] }) + "\n", stderr: "" };
+      return {
+        stdout: `${JSON.stringify({ capabilities: ["events.v1"] })}\n`,
+        stderr: "",
+      };
     }
     if (args[0] === "new-pane" || args[0] === "new-surface") {
       // The FIFO path is embedded in --command (bootstrap approach); drain it
       // so the background tee writer can complete.
       const cmdIdx = args.indexOf("--command");
       if (cmdIdx !== -1) {
-        const fifoMatch = args[cmdIdx + 1].match(/'([^']+\/environment\.fifo)'/);
+        const fifoMatch = args[cmdIdx + 1].match(
+          /'([^']+\/environment\.fifo)'/,
+        );
         if (fifoMatch) await readFile(fifoMatch[1], "utf8");
       }
       let paneRef;
       if (args[0] === "new-pane") {
         paneRef = `pane:${nextNum}`;
-        panes.set(paneRef, { paneId: `pane-id-${nextNum}`, surfaceRefs: new Set() });
+        panes.set(paneRef, {
+          paneId: `pane-id-${nextNum}`,
+          surfaceRefs: new Set(),
+        });
       } else {
         paneRef = args[args.indexOf("--pane") + 1];
         if (!panes.has(paneRef)) {
@@ -126,14 +142,31 @@ function makeStatefulFakeIo() {
       }
       const n = nextNum++;
       const surfaceRef = `surface:${n}`;
-      const surface = { id: `sf-id-${n}`, ref: surfaceRef, title: "conformance", type: "terminal" };
+      const surface = {
+        id: `sf-id-${n}`,
+        ref: surfaceRef,
+        title: "conformance",
+        type: "terminal",
+      };
       surfaces.set(surfaceRef, { paneRef, surface });
       panes.get(paneRef).surfaceRefs.add(surfaceRef);
-      return { stdout: `OK ${surfaceRef} ${paneRef} ${workspaceRef}\n`, stderr: "" };
+      return {
+        stdout: `OK ${surfaceRef} ${paneRef} ${workspaceRef}\n`,
+        stderr: "",
+      };
     }
-    if (args[0] === "--id-format" && args[1] === "both" && args[2] === "list-pane-surfaces") {
+    if (
+      args[0] === "--id-format" &&
+      args[1] === "both" &&
+      args[2] === "list-pane-surfaces"
+    ) {
       const paneIdx = args.indexOf("--pane");
-      return { stdout: JSON.stringify(snapshotFor(paneIdx === -1 ? null : args[paneIdx + 1])) + "\n", stderr: "" };
+      return {
+        stdout: `${JSON.stringify(
+          snapshotFor(paneIdx === -1 ? null : args[paneIdx + 1]),
+        )}\n`,
+        stderr: "",
+      };
     }
     if (args[0] === "close-surface") {
       const surfaceRef = args[args.indexOf("--surface") + 1];
@@ -172,5 +205,9 @@ const registered = registerExecutionBackendConformance({
 });
 
 test("conformance suite registers the expected number of core testkit cases", () => {
-  assert.equal(registered, CONFORMANCE_TEST_COUNT, `expected ${CONFORMANCE_TEST_COUNT} tests registered`);
+  assert.equal(
+    registered,
+    CONFORMANCE_TEST_COUNT,
+    `expected ${CONFORMANCE_TEST_COUNT} tests registered`,
+  );
 });

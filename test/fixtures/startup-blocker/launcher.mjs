@@ -23,7 +23,9 @@ const release = createReadStream(fifo, { encoding: "utf8" });
 release.once("data", () => {
   release.close();
   const control = net.createConnection(socketPath);
-  control.once("connect", () => control.write(`${JSON.stringify({ type: "ready" })}\n`));
+  control.once("connect", () =>
+    control.write(`${JSON.stringify({ type: "ready" })}\n`),
+  );
   const frames = createJsonlFrameBuffer((frame) => {
     if (frame.type === "shutdown") exitCleanly();
   });

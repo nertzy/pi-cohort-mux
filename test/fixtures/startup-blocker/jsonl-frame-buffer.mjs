@@ -7,8 +7,11 @@ export function createJsonlFrameBuffer(onFrame) {
     },
     feed(chunk) {
       buffer += chunk;
-      let newline;
-      while ((newline = buffer.indexOf("\n")) >= 0) {
+      for (
+        let newline = buffer.indexOf("\n");
+        newline >= 0;
+        newline = buffer.indexOf("\n")
+      ) {
         const line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
         if (line) onFrame(JSON.parse(line));

@@ -353,7 +353,7 @@ migration history in this transfer document.
 ### Ownership and result source
 
 | Concern | Owner |
-|---|---|
+| --- | --- |
 | reporting extension via `runtimeExtensions` | pi-cohort core |
 | session-log parse/replay, result construction, durable delivery | pi-cohort core |
 | ready/abort/shutdown control channel (no steer, no rebound) | pi-cohort core |

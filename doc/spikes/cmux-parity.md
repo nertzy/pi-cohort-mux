@@ -105,7 +105,7 @@ never claims anything about a Pi agent session's identity or liveness.
 After the disposable workspace is closed by the reattached handle's ref, the
 exact same one-shot query against the exact same ref fails:
 
-```
+```console
 $ cmux list-pane-surfaces --workspace workspace:112 --json
 Error: not_found: Pane or workspace not found
 ```
@@ -127,7 +127,7 @@ Unrelated facts are permitted. This pre-armed, correlated absence window
 proves no generic public cmux exit fact was observed for the reporter's own
 exit; it does not infer process status from the subscription acknowledgment:
 
-```
+```console
 $ cmux events --name surface.closed --name pane.closed --name workspace.closed --no-heartbeat
 {"...":"...","type":"ack",...}
 <no reporter-UUID-correlated frame within 1500ms>

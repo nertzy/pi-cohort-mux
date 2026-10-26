@@ -5,14 +5,23 @@ import { chmod, mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import test from "node:test";
-import { createFakeScheduler, createMachine } from "./fixtures/lifecycle/state-machine.mjs";
+import { promisify } from "node:util";
+import {
+  createFakeScheduler,
+  createMachine,
+} from "./fixtures/lifecycle/state-machine.mjs";
 import { createJsonlFrameBuffer } from "./fixtures/startup-blocker/jsonl-frame-buffer.mjs";
-import { exitStatusSkipReason, firstPaneDeath } from "./support/tmux-pane-exit.mjs";
+import {
+  exitStatusSkipReason,
+  firstPaneDeath,
+} from "./support/tmux-pane-exit.mjs";
 
 const execFile = promisify(execFileCallback);
-const tmuxVersion = await execFile("tmux", ["-V"]).then(({ stdout }) => stdout, () => undefined);
+const tmuxVersion = await execFile("tmux", ["-V"]).then(
+  ({ stdout }) => stdout,
+  () => undefined,
+);
 const tmuxAvailable = tmuxVersion !== undefined;
 const tmuxTimeout = 5_000;
 
@@ -26,7 +35,9 @@ function dispatch(machine, type, detail = {}) {
 }
 
 function tmux(server, ...args) {
-  return execFile("tmux", ["-L", server, "-f", "/dev/null", ...args], { timeout: tmuxTimeout });
+  return execFile("tmux", ["-L", server, "-f", "/dev/null", ...args], {
+    timeout: tmuxTimeout,
+  });
 }
 
 function waitForProcess(child, deadline) {
@@ -49,7 +60,9 @@ function waitForProcess(child, deadline) {
 }
 
 function writeSocket(client, frame) {
-  return new Promise((resolve, reject) => client.write(frame, (error) => error ? reject(error) : resolve()));
+  return new Promise((resolve, reject) =>
+    client.write(frame, (error) => (error ? reject(error) : resolve())),
+  );
 }
 
 async function controlSocket(socketPath, { deadline = tmuxTimeout } = {}) {
@@ -57,7 +70,9 @@ async function controlSocket(socketPath, { deadline = tmuxTimeout } = {}) {
   let resolveConnection;
   let resolveReady;
   let rejectReady;
-  const connected = new Promise((resolve) => { resolveConnection = resolve; });
+  const connected = new Promise((resolve) => {
+    resolveConnection = resolve;
+  });
   const ready = new Promise((resolve, reject) => {
     resolveReady = resolve;
     rejectReady = reject;
@@ -75,7 +90,13 @@ async function controlSocket(socketPath, { deadline = tmuxTimeout } = {}) {
       resolveReady(JSON.parse(data.slice(0, newline)));
     });
   });
-  const readyTimer = setTimeout(() => rejectReady(new Error(`control ready did not arrive within ${deadline}ms`)), deadline);
+  const readyTimer = setTimeout(
+    () =>
+      rejectReady(
+        new Error(`control ready did not arrive within ${deadline}ms`),
+      ),
+    deadline,
+  );
   ready.catch(() => {});
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -102,13 +123,28 @@ async function controlSocket(socketPath, { deadline = tmuxTimeout } = {}) {
 }
 
 async function writeFifo(fifo) {
-  await execFile("sh", ["-c", "printf release > \"$1\"", "sh", fifo], { timeout: tmuxTimeout });
+  await execFile("sh", ["-c", 'printf release > "$1"', "sh", fifo], {
+    timeout: tmuxTimeout,
+  });
 }
 
-function waitForPaneExit(server, channel, { pane, deadline = tmuxTimeout, launch = spawn } = {}) {
-  const child = launch("tmux", ["-L", server, "-f", "/dev/null", "wait-for", channel]);
+function waitForPaneExit(
+  server,
+  channel,
+  { pane, deadline = tmuxTimeout, launch = spawn } = {},
+) {
+  const child = launch("tmux", [
+    "-L",
+    server,
+    "-f",
+    "/dev/null",
+    "wait-for",
+    channel,
+  ]);
   const hooked = waitForProcess(child, deadline);
-  return pane ? firstPaneDeath({ hooked, waiter: child, server, pane }) : hooked;
+  return pane
+    ? firstPaneDeath({ hooked, waiter: child, server, pane })
+    : hooked;
 }
 
 test("injected deadline classifies a generic pre-ready blocker without an exit claim", () => {
@@ -124,7 +160,10 @@ test("injected deadline classifies a generic pre-ready blocker without an exit c
   assert.equal(pane, "pre-ready-spike:0.0");
   assert.equal(snapshot.facts.exited, undefined);
   assert.match(pane, /:\d+\.\d+$/);
-  assert.doesNotMatch(JSON.stringify(snapshot), /mise|shell prompt|prompt text|direnv/i);
+  assert.doesNotMatch(
+    JSON.stringify(snapshot),
+    /mise|shell prompt|prompt text|direnv/i,
+  );
 });
 
 test("unsignaled lifecycle waiter rejects at its deadline", async () => {
@@ -132,23 +171,56 @@ test("unsignaled lifecycle waiter rejects at its deadline", async () => {
   child.kill = () => {};
 
   await assert.rejects(
-    waitForPaneExit("unused", "unsignaled", { deadline: 1, launch: () => child }),
+    waitForPaneExit("unused", "unsignaled", {
+      deadline: 1,
+      launch: () => child,
+    }),
     /lifecycle signal did not arrive within 1ms/,
   );
 });
 
-test("pane exit is observed even when the pane-died hook never fires", { skip: !tmuxAvailable && "tmux is unavailable" }, async () => {
+test("pane exit is observed even when the pane-died hook never fires", {
+  skip: !tmuxAvailable && "tmux is unavailable",
+}, async () => {
   const server = `pre-ready-missed-hook-${process.pid}-${Date.now()}`;
   try {
     await tmux(server, "new-session", "-d", "-s", "missed-hook", "cat");
     await tmux(server, "set-option", "-w", "-g", "remain-on-exit", "on");
     // No pane-died hook: nothing will ever signal this channel.
-    const { stdout } = await tmux(server, "new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "missed-hook", "cat");
+    const { stdout } = await tmux(
+      server,
+      "new-window",
+      "-d",
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "-t",
+      "missed-hook",
+      "cat",
+    );
     const paneId = stdout.trim();
-    const observed = waitForPaneExit(server, `never-signaled-${paneId}`, { pane: paneId });
-    await tmux(server, "respawn-pane", "-k", "-t", paneId, "sh", "-c", "exit 7");
+    const observed = waitForPaneExit(server, `never-signaled-${paneId}`, {
+      pane: paneId,
+    });
+    await tmux(
+      server,
+      "respawn-pane",
+      "-k",
+      "-t",
+      paneId,
+      "sh",
+      "-c",
+      "exit 7",
+    );
     await observed;
-    const { stdout: status } = await tmux(server, "display-message", "-p", "-t", paneId, "#{pane_dead} #{pane_dead_status}");
+    const { stdout: status } = await tmux(
+      server,
+      "display-message",
+      "-p",
+      "-t",
+      paneId,
+      "#{pane_dead} #{pane_dead_status}",
+    );
     assert.equal(status.trim(), "1 7");
   } finally {
     await tmux(server, "kill-server").catch(() => {});
@@ -161,7 +233,10 @@ test("control readiness rejects at its deadline", async () => {
   const control = await controlSocket(socketPath, { deadline: 1 });
 
   try {
-    await assert.rejects(control.ready, /control ready did not arrive within 1ms/);
+    await assert.rejects(
+      control.ready,
+      /control ready did not arrive within 1ms/,
+    );
   } finally {
     await control.close();
     await rm(directory, { recursive: true, force: true });
@@ -212,10 +287,17 @@ test("authoritative nonzero exit before ready is startup_failed with exact prove
   const snapshot = machine.snapshot();
   assert.equal(snapshot.phase, "startup_failed");
   assert.deepEqual(snapshot.facts.exited, { status: 23, signal: null });
-  assert.deepEqual(snapshot.provenance.at(-1), { type: "exited", source: "mux" });
+  assert.deepEqual(snapshot.provenance.at(-1), {
+    type: "exited",
+    source: "mux",
+  });
 });
 
-test("real tmux lifecycle hook retains a blocked pane, recovers on control ready, and observes clean exit", { skip: tmuxAvailable ? exitStatusSkipReason(tmuxVersion) : "tmux is unavailable; reducer-only cases remain active" }, async () => {
+test("real tmux lifecycle hook retains a blocked pane, recovers on control ready, and observes clean exit", {
+  skip: tmuxAvailable
+    ? exitStatusSkipReason(tmuxVersion)
+    : "tmux is unavailable; reducer-only cases remain active",
+}, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "pre-ready-blocker-"));
   const fifo = path.join(directory, "release.fifo");
   const socketPath = path.join(directory, "control.sock");
@@ -230,8 +312,27 @@ test("real tmux lifecycle hook retains a blocked pane, recovers on control ready
     control = await controlSocket(socketPath);
     await tmux(server, "new-session", "-d", "-s", "observer", "cat");
     await tmux(server, "set-option", "-w", "-g", "remain-on-exit", "on");
-    await tmux(server, "set-hook", "-g", "pane-died", `run-shell -b 'tmux -L ${server} -f /dev/null wait-for -S ${channelPrefix}-#{pane_id}'`);
-    const { stdout: paneIdOutput } = await tmux(server, "new-session", "-d", "-P", "-F", "#{pane_id}", "-s", session, process.execPath, launcher, fifo, socketPath);
+    await tmux(
+      server,
+      "set-hook",
+      "-g",
+      "pane-died",
+      `run-shell -b 'tmux -L ${server} -f /dev/null wait-for -S ${channelPrefix}-#{pane_id}'`,
+    );
+    const { stdout: paneIdOutput } = await tmux(
+      server,
+      "new-session",
+      "-d",
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "-s",
+      session,
+      process.execPath,
+      launcher,
+      fifo,
+      socketPath,
+    );
     const paneId = paneIdOutput.trim();
 
     const { scheduler, machine } = fixtureMachine();
@@ -242,7 +343,10 @@ test("real tmux lifecycle hook retains a blocked pane, recovers on control ready
     assert.equal(machine.snapshot().intent, "retain");
     assert.equal(machine.snapshot().facts.exited, undefined);
     assert.match(pane, /:\d+\.\d+$/);
-    assert.doesNotMatch(JSON.stringify(machine.snapshot()), /mise|shell prompt|prompt text|direnv/i);
+    assert.doesNotMatch(
+      JSON.stringify(machine.snapshot()),
+      /mise|shell prompt|prompt text|direnv/i,
+    );
 
     await writeFifo(fifo);
     const frame = await control.ready;
@@ -250,26 +354,71 @@ test("real tmux lifecycle hook retains a blocked pane, recovers on control ready
     dispatch(machine, frame.type);
     assert.equal(machine.snapshot().phase, "running");
 
-    const observedExit = waitForPaneExit(server, `${channelPrefix}-${paneId}`, { pane: paneId });
+    const observedExit = waitForPaneExit(server, `${channelPrefix}-${paneId}`, {
+      pane: paneId,
+    });
     await control.shutdown({ split: true });
     await observedExit;
-    const { stdout: cleanExit } = await tmux(server, "display-message", "-p", "-t", pane, "#{pane_dead} #{pane_dead_status}");
+    const { stdout: cleanExit } = await tmux(
+      server,
+      "display-message",
+      "-p",
+      "-t",
+      pane,
+      "#{pane_dead} #{pane_dead_status}",
+    );
     assert.equal(cleanExit.trim(), "1 0");
 
-    const { stdout: exitPaneIdOutput } = await tmux(server, "new-window", "-d", "-P", "-F", "#{pane_id}", "-t", session, "-n", "exit-before-ready", "cat");
+    const { stdout: exitPaneIdOutput } = await tmux(
+      server,
+      "new-window",
+      "-d",
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "-t",
+      session,
+      "-n",
+      "exit-before-ready",
+      "cat",
+    );
     const exitPaneId = exitPaneIdOutput.trim();
     const exitPane = `${session}:1.0`;
-    const observedFailure = waitForPaneExit(server, `${channelPrefix}-${exitPaneId}`, { pane: exitPaneId });
-    await tmux(server, "respawn-pane", "-k", "-t", exitPane, process.execPath, launcher, "--exit-before-ready", "23");
+    const observedFailure = waitForPaneExit(
+      server,
+      `${channelPrefix}-${exitPaneId}`,
+      { pane: exitPaneId },
+    );
+    await tmux(
+      server,
+      "respawn-pane",
+      "-k",
+      "-t",
+      exitPane,
+      process.execPath,
+      launcher,
+      "--exit-before-ready",
+      "23",
+    );
     await observedFailure;
-    const { stdout } = await tmux(server, "display-message", "-p", "-t", exitPane, "#{pane_dead_status}");
+    const { stdout } = await tmux(
+      server,
+      "display-message",
+      "-p",
+      "-t",
+      exitPane,
+      "#{pane_dead_status}",
+    );
     const status = Number(stdout.trim());
     assert.equal(status, 23);
     const failed = fixtureMachine().machine;
     dispatch(failed, "surface_created", { pane: exitPane });
     dispatch(failed, "exited", { status, signal: null });
     assert.equal(failed.snapshot().phase, "startup_failed");
-    assert.deepEqual(failed.snapshot().facts.exited, { status: 23, signal: null });
+    assert.deepEqual(failed.snapshot().facts.exited, {
+      status: 23,
+      signal: null,
+    });
   } finally {
     await tmux(server, "kill-server").catch(() => {});
     if (control) await control.close();

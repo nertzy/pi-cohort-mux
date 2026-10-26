@@ -7,7 +7,13 @@
 // Every lookup returns either a value or a `skipReason` that names what was
 // looked for, so a skipped test says exactly which prerequisite was missing.
 
-import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -29,7 +35,8 @@ export function findOnPath(name, path = process.env.PATH ?? "") {
 
 const packageName = (directory) => {
   try {
-    return JSON.parse(readFileSync(join(directory, "package.json"), "utf8")).name;
+    return JSON.parse(readFileSync(join(directory, "package.json"), "utf8"))
+      .name;
   } catch {
     return undefined;
   }
@@ -38,8 +45,12 @@ const packageName = (directory) => {
 function packageRootFrom(start) {
   for (let directory = start; ; directory = dirname(directory)) {
     if (packageName(directory) === codingAgent) return directory;
-    for (const candidate of [join(directory, "node_modules", codingAgent), join(directory, codingAgent)]) {
-      if (packageName(candidate) === codingAgent) return realpathSync(candidate);
+    for (const candidate of [
+      join(directory, "node_modules", codingAgent),
+      join(directory, codingAgent),
+    ]) {
+      if (packageName(candidate) === codingAgent)
+        return realpathSync(candidate);
     }
     if (directory === parse(directory).root) return null;
   }
@@ -49,8 +60,14 @@ export function resolvePi(path = process.env.PATH ?? "") {
   const executable = findOnPath("pi", path);
   if (!executable) return { skipReason: "requires an executable `pi` on PATH" };
   const root = packageRootFrom(dirname(realpathSync(executable)));
-  if (!root) return { executable, skipReason: `requires ${codingAgent} next to ${realpathSync(executable)} (resolved from \`pi\` on PATH)` };
-  const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  if (!root)
+    return {
+      executable,
+      skipReason: `requires ${codingAgent} next to ${realpathSync(executable)} (resolved from \`pi\` on PATH)`,
+    };
+  const { version } = JSON.parse(
+    readFileSync(join(root, "package.json"), "utf8"),
+  );
   return { executable, root, version };
 }
 
@@ -58,18 +75,31 @@ export function resolvePi(path = process.env.PATH ?? "") {
 export function piModule(pi, relativePath) {
   if (pi.skipReason) return { skipReason: pi.skipReason };
   const file = join(pi.root, relativePath);
-  return existsSync(file) ? { url: pathToFileURL(file).href } : { skipReason: `requires ${file} in Pi ${pi.version}` };
+  return existsSync(file)
+    ? { url: pathToFileURL(file).href }
+    : { skipReason: `requires ${file} in Pi ${pi.version}` };
 }
 
 // The ESM entry URL of a package Pi itself depends on (e.g. @earendil-works/pi-ai),
 // resolved with Node's lookup paths from the pi-coding-agent package root.
 export function piDependency(pi, name) {
   if (pi.skipReason) return { skipReason: pi.skipReason };
-  const lookup = createRequire(join(pi.root, "package.json")).resolve.paths(name) ?? [];
-  const directory = lookup.map((base) => join(base, name)).find((candidate) => packageName(candidate) === name);
-  if (!directory) return { skipReason: `requires ${name} resolvable from ${pi.root}` };
-  const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
+  const lookup =
+    createRequire(join(pi.root, "package.json")).resolve.paths(name) ?? [];
+  const directory = lookup
+    .map((base) => join(base, name))
+    .find((candidate) => packageName(candidate) === name);
+  if (!directory)
+    return { skipReason: `requires ${name} resolvable from ${pi.root}` };
+  const manifest = JSON.parse(
+    readFileSync(join(directory, "package.json"), "utf8"),
+  );
   const root = manifest.exports?.["."] ?? manifest.exports;
-  const entry = (typeof root === "string" ? root : root?.import?.default ?? root?.import ?? root?.default) ?? manifest.module ?? manifest.main;
+  const entry =
+    (typeof root === "string"
+      ? root
+      : (root?.import?.default ?? root?.import ?? root?.default)) ??
+    manifest.module ??
+    manifest.main;
   return { url: pathToFileURL(join(directory, entry)).href };
 }

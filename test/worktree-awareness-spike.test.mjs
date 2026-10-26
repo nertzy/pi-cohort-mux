@@ -4,12 +4,19 @@ import { chmod, mkdtemp, realpath, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import test from "node:test";
-import { firstPaneDeath } from "./support/tmux-pane-exit.mjs";
+import { promisify } from "node:util";
+import {
+  exitStatusSkipReason,
+  firstPaneDeath,
+} from "./support/tmux-pane-exit.mjs";
 
 const execFile = promisify(execFileCallback);
-const tmuxAvailable = await execFile("tmux", ["-V"]).then(() => true, () => false);
+const tmuxVersion = await execFile("tmux", ["-V"]).then(
+  ({ stdout }) => stdout,
+  () => undefined,
+);
+const tmuxAvailable = tmuxVersion !== undefined;
 const deadline = 5_000;
 
 function command(command, args, options = {}) {
@@ -24,27 +31,57 @@ function waitForProcess(child) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      reject(new Error(`native completion did not arrive within ${deadline}ms`));
+      reject(
+        new Error(`native completion did not arrive within ${deadline}ms`),
+      );
     }, deadline);
-    child.once("error", (error) => { clearTimeout(timer); reject(error); });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     child.once("exit", (code, signal) => {
       clearTimeout(timer);
-      code === 0 ? resolve() : reject(new Error(`waiter exited with ${code ?? signal}`));
+      code === 0
+        ? resolve()
+        : reject(new Error(`waiter exited with ${code ?? signal}`));
     });
   });
 }
 
 function waitForPaneExit(server, channel, pane) {
-  const waiter = spawn("tmux", ["-L", server, "-f", "/dev/null", "wait-for", channel]);
-  return firstPaneDeath({ hooked: waitForProcess(waiter), waiter, server, pane });
+  const waiter = spawn("tmux", [
+    "-L",
+    server,
+    "-f",
+    "/dev/null",
+    "wait-for",
+    channel,
+  ]);
+  return firstPaneDeath({
+    hooked: waitForProcess(waiter),
+    waiter,
+    server,
+    pane,
+  });
 }
 
 async function resultSocket(socketPath, expected) {
   const messages = [];
   let resolveMessages;
   let rejectMessages;
-  const received = new Promise((resolve, reject) => { resolveMessages = resolve; rejectMessages = reject; });
-  const timer = setTimeout(() => rejectMessages(new Error(`expected ${expected} structured reports within ${deadline}ms`)), deadline);
+  const received = new Promise((resolve, reject) => {
+    resolveMessages = resolve;
+    rejectMessages = reject;
+  });
+  const timer = setTimeout(
+    () =>
+      rejectMessages(
+        new Error(
+          `expected ${expected} structured reports within ${deadline}ms`,
+        ),
+      ),
+    deadline,
+  );
   received.catch(() => {});
   const server = net.createServer((client) => {
     let buffer = "";
@@ -75,7 +112,9 @@ async function resultSocket(socketPath, expected) {
     received,
     async close() {
       clearTimeout(timer);
-      rejectMessages(new Error("result socket closed before all reports arrived"));
+      rejectMessages(
+        new Error("result socket closed before all reports arrived"),
+      );
       await new Promise((resolve) => server.close(resolve));
     },
   };
@@ -92,41 +131,107 @@ async function initializeWorktrees(directory) {
   await git(directory, "init", "--initial-branch=main", repository);
   await git(repository, "config", "user.email", "fixture@example.test");
   await git(repository, "config", "user.name", "Fixture");
-  await command("sh", ["-c", "printf base > base.txt && git add base.txt && git commit -m base",], { cwd: repository });
+  await command(
+    "sh",
+    ["-c", "printf base > base.txt && git add base.txt && git commit -m base"],
+    { cwd: repository },
+  );
   await git(repository, "worktree", "add", "-b", "alpha", alpha);
   await git(repository, "worktree", "add", "-b", "beta", beta);
-  await command("sh", ["-c", "printf alpha > marker-alpha.txt && git add marker-alpha.txt && git commit -m alpha",], { cwd: alpha });
-  await command("sh", ["-c", "printf beta > marker-beta.txt && git add marker-beta.txt && git commit -m beta",], { cwd: beta });
+  await command(
+    "sh",
+    [
+      "-c",
+      "printf alpha > marker-alpha.txt && git add marker-alpha.txt && git commit -m alpha",
+    ],
+    { cwd: alpha },
+  );
+  await command(
+    "sh",
+    [
+      "-c",
+      "printf beta > marker-beta.txt && git add marker-beta.txt && git commit -m beta",
+    ],
+    { cwd: beta },
+  );
   return { repository, alpha, beta };
 }
 
 const reporter = path.resolve("test/fixtures/worktree-awareness/reporter.mjs");
 
 function launchDirectReporter({ cwd, socketPath }) {
-  return waitForProcess(spawn(process.execPath, [reporter, socketPath], {
-    cwd,
-    // The absolute Node path still runs, but any accidental git lookup fails.
-    env: { PATH: "" },
-  }));
+  return waitForProcess(
+    spawn(process.execPath, [reporter, socketPath], {
+      cwd,
+      // The absolute Node path still runs, but any accidental git lookup fails.
+      env: { PATH: "" },
+    }),
+  );
 }
 
 async function launchReporter({ server, session, cwd, socketPath, metadata }) {
   const channel = `worktree-exit-${process.pid}-${Date.now()}-${session}`;
   await tmux(server, "new-session", "-d", "-s", session, "cat");
-  await tmux(server, "set-option", "-w", "-t", `${session}:0`, "remain-on-exit", "on");
-  await tmux(server, "set-hook", "-w", "-t", `${session}:0`, "pane-died", `run-shell -b 'tmux -L ${server} -f /dev/null wait-for -S ${channel}-#{pane_id}'`);
-  const { stdout } = await tmux(server, "display-message", "-p", "-t", `${session}:0.0`, "#{pane_id}");
+  await tmux(
+    server,
+    "set-option",
+    "-w",
+    "-t",
+    `${session}:0`,
+    "remain-on-exit",
+    "on",
+  );
+  await tmux(
+    server,
+    "set-hook",
+    "-w",
+    "-t",
+    `${session}:0`,
+    "pane-died",
+    `run-shell -b 'tmux -L ${server} -f /dev/null wait-for -S ${channel}-#{pane_id}'`,
+  );
+  const { stdout } = await tmux(
+    server,
+    "display-message",
+    "-p",
+    "-t",
+    `${session}:0.0`,
+    "#{pane_id}",
+  );
   const paneId = stdout.trim();
   const exited = waitForPaneExit(server, `${channel}-${paneId}`, paneId);
-  const metadataBase64 = metadata ? Buffer.from(JSON.stringify(metadata)).toString("base64url") : "";
-  await tmux(server, "respawn-pane", "-k", "-t", `${session}:0.0`, "-c", cwd, process.execPath, reporter, socketPath, metadataBase64);
+  const metadataBase64 = metadata
+    ? Buffer.from(JSON.stringify(metadata)).toString("base64url")
+    : "";
+  await tmux(
+    server,
+    "respawn-pane",
+    "-k",
+    "-t",
+    `${session}:0.0`,
+    "-c",
+    cwd,
+    process.execPath,
+    reporter,
+    socketPath,
+    metadataBase64,
+  );
   await exited;
-  const { stdout: status } = await tmux(server, "display-message", "-p", "-t", `${session}:0.0`, "#{pane_dead_status}");
+  const { stdout: status } = await tmux(
+    server,
+    "display-message",
+    "-p",
+    "-t",
+    `${session}:0.0`,
+    "#{pane_dead_status}",
+  );
   assert.equal(status.trim(), "0");
 }
 
 test("direct reporter preserves a plain non-Git cwd without Git or awareness metadata", async () => {
-  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "worktree-awareness-plain-")));
+  const directory = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "worktree-awareness-plain-")),
+  );
   const plain = path.join(directory, "plain");
   const socketPath = path.join(directory, "reports.sock");
   let reports;
@@ -147,8 +252,15 @@ test("direct reporter preserves a plain non-Git cwd without Git or awareness met
   }
 });
 
-test("real tmux reporters preserve Cohort-resolved cwd across linked worktrees", { skip: !tmuxAvailable && "tmux is unavailable; no real-surface cases ran" }, async () => {
-  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "worktree-awareness-")));
+test("real tmux reporters preserve Cohort-resolved cwd across linked worktrees", {
+  // Each reporter's exact exit status is asserted; tmux before 3.5 can lose it.
+  skip: tmuxAvailable
+    ? exitStatusSkipReason(tmuxVersion)
+    : "tmux is unavailable; no real-surface cases ran",
+}, async () => {
+  const directory = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "worktree-awareness-")),
+  );
   const socketPath = path.join(directory, "reports.sock");
   const server = `worktree-awareness-${process.pid}-${Date.now()}`;
   let reports;
@@ -157,21 +269,51 @@ test("real tmux reporters preserve Cohort-resolved cwd across linked worktrees",
     const { repository, alpha, beta } = await initializeWorktrees(directory);
     reports = await resultSocket(socketPath, 2);
 
-    await launchReporter({ server, session: "alpha", cwd: alpha, socketPath, metadata: { repositoryRoot: path.join(directory, "wrong-root") } });
-    await launchReporter({ server, session: "beta", cwd: beta, socketPath, metadata: { repositoryRoot: repository } });
+    await launchReporter({
+      server,
+      session: "alpha",
+      cwd: alpha,
+      socketPath,
+      metadata: { repositoryRoot: path.join(directory, "wrong-root") },
+    });
+    await launchReporter({
+      server,
+      session: "beta",
+      cwd: beta,
+      socketPath,
+      metadata: { repositoryRoot: repository },
+    });
 
-    const byCwd = new Map((await reports.received).map((report) => [report.cwd, report]));
+    const byCwd = new Map(
+      (await reports.received).map((report) => [report.cwd, report]),
+    );
     assert.deepEqual([...byCwd.keys()].sort(), [alpha, beta].sort());
     assert.deepEqual(byCwd.get(alpha).markers, ["marker-alpha.txt"]);
     assert.deepEqual(byCwd.get(beta).markers, ["marker-beta.txt"]);
-    assert.deepEqual(byCwd.get(alpha).git, { topLevel: alpha, branch: "alpha", detached: false });
-    assert.deepEqual(byCwd.get(beta).git, { topLevel: beta, branch: "beta", detached: false });
-    assert.equal(byCwd.get(alpha).metadata.repositoryRoot, path.join(directory, "wrong-root"));
+    assert.deepEqual(byCwd.get(alpha).git, {
+      topLevel: alpha,
+      branch: "alpha",
+      detached: false,
+    });
+    assert.deepEqual(byCwd.get(beta).git, {
+      topLevel: beta,
+      branch: "beta",
+      detached: false,
+    });
+    assert.equal(
+      byCwd.get(alpha).metadata.repositoryRoot,
+      path.join(directory, "wrong-root"),
+    );
     assert.equal(byCwd.get(alpha).cwd, alpha);
-    assert.notEqual(byCwd.get(alpha).cwd, byCwd.get(alpha).metadata.repositoryRoot);
+    assert.notEqual(
+      byCwd.get(alpha).cwd,
+      byCwd.get(alpha).metadata.repositoryRoot,
+    );
 
     await tmux(server, "kill-server");
-    await assert.doesNotReject(git(repository, "worktree", "list", "--porcelain"));
+    await assert.doesNotReject(
+      git(repository, "worktree", "list", "--porcelain"),
+    );
     await assert.doesNotReject(command("test", ["-d", alpha]));
     await assert.doesNotReject(command("test", ["-d", beta]));
   } finally {

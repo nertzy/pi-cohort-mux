@@ -4,13 +4,33 @@
   "description": "cmux execution adapter for pi-cohort",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.js", "./execution-backend": "./src/cmux-backend.js" },
-  "files": ["src"],
-  "engines": { "node": ">=20" },
+  "exports": {
+    ".": "./src/index.js",
+    "./execution-backend": "./src/cmux-backend.js"
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=26"
+  },
   "license": "MIT",
   "repository": "github:nertzy/pi-cohort-mux",
-  "dependencies": { "pi-cohort-mux": "0.0.0" },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": ">=0.85.0", "pi-cohort": "^7.0.0" },
-  "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } },
-  "pi": { "extensions": ["./src/index.js"] }
+  "dependencies": {
+    "pi-cohort-mux": "0.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.85.0",
+    "pi-cohort": "^7.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.js"
+    ]
+  }
 }

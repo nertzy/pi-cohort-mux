@@ -25,22 +25,30 @@
  */
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import test from "node:test";
 
 import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
+import { cmuxDeadline } from "./support/cmux-deadline.mjs";
 
 const execFile = promisify(execFileCallback);
 
 const SMOKE_FLAG = "PI_COHORT_MUX_PRODUCTION_CMUX_SMOKE";
-const EVIDENCE_DEADLINE_MS = 15_000;
-const CLI_DEADLINE_MS = 10_000;
-const DISAPPEARANCE_DEADLINE_MS = 5_000;
+const EVIDENCE_DEADLINE_MS = cmuxDeadline(15_000);
+const CLI_DEADLINE_MS = cmuxDeadline(10_000);
+const DISAPPEARANCE_DEADLINE_MS = cmuxDeadline(5_000);
+// The backend's own deadlines, lengthened the same way where cmux is slow.
+const BACKEND_DEADLINES = {
+  cliDeadlineMs: cmuxDeadline(10_000),
+  ackDeadlineMs: cmuxDeadline(10_000),
+  handoffDeadlineMs: cmuxDeadline(10_000),
+  orphanGraceMs: cmuxDeadline(3_000),
+};
 const DISAPPEARANCE_POLL_MS = 100;
 const SENTINEL_WRITER = fileURLToPath(
   new URL("fixtures/production-smoke/sentinel-writer.mjs", import.meta.url),
@@ -55,7 +63,7 @@ const optedIn = process.env[SMOKE_FLAG] === "1";
 let probe = { available: false, version: "", capabilities: [] };
 if (optedIn) {
   try {
-    probe = await createCmuxBackend().detect();
+    probe = await createCmuxBackend(BACKEND_DEADLINES).detect();
   } catch (error) {
     probe = { available: false, version: "", capabilities: [], error };
   }
@@ -85,23 +93,42 @@ async function pollForFile(filePath, deadline = EVIDENCE_DEADLINE_MS) {
 
 function isNotFound(error) {
   const text = (error?.message ?? "") + (error?.stderr ?? "");
-  return /\bnot_found\b|\b(?:workspace|pane|surface) ref not found\b/i.test(text);
+  return /\bnot_found\b|\b(?:workspace|pane|surface) ref not found\b/i.test(
+    text,
+  );
 }
 
 /**
  * Poll until the owned surface is absent from its pane's snapshot. A closed
  * last surface collapses the helper pane, so not-found on the pane is absence.
  */
-async function verifyGone({ workspaceRef, paneRef, surfaceId }, deadline = DISAPPEARANCE_DEADLINE_MS) {
+async function verifyGone(
+  { workspaceRef, paneRef, surfaceId },
+  deadline = DISAPPEARANCE_DEADLINE_MS,
+) {
   const end = Date.now() + deadline;
   while (true) {
     try {
       const { stdout } = await execFile(
         "cmux",
-        ["--id-format", "both", "list-pane-surfaces", "--workspace", workspaceRef, "--pane", paneRef, "--json"],
+        [
+          "--id-format",
+          "both",
+          "list-pane-surfaces",
+          "--workspace",
+          workspaceRef,
+          "--pane",
+          paneRef,
+          "--json",
+        ],
         { timeout: CLI_DEADLINE_MS },
       );
-      if (!JSON.parse(stdout).surfaces?.some((surface) => surface.id === surfaceId)) return true;
+      if (
+        !JSON.parse(stdout).surfaces?.some(
+          (surface) => surface.id === surfaceId,
+        )
+      )
+        return true;
     } catch (error) {
       if (isNotFound(error)) return true;
       throw error;
@@ -114,251 +141,320 @@ async function verifyGone({ workspaceRef, paneRef, surfaceId }, deadline = DISAP
 
 // ─── Production smoke test ────────────────────────────────────────────────────
 
-test(
-  "production cmux backend: launch → evidence → release-retains → reattach → close → verify-gone",
-  { skip: skipReason || false },
-  async () => {
-    // A non-empty environment exercises the owner-only FIFO bootstrap. The
-    // child opens that FIFO; cmux receives only its path in the command argv.
-    const backend = createCmuxBackend(); // real cmux CLI — no injection
+test("production cmux backend: launch → evidence → release-retains → reattach → close → verify-gone", {
+  skip: skipReason || false,
+}, async () => {
+  // A non-empty environment exercises the owner-only FIFO bootstrap. The
+  // child opens that FIFO; cmux receives only its path in the command argv.
+  const backend = createCmuxBackend(BACKEND_DEADLINES); // real cmux CLI — no injection
 
-    // State tracked across the try/finally so cleanup is unconditional.
-    let tempDir;
-    let expectedCwd;
-    let launchLease;
-    let reattachLease;
-    let ownedSurface;
-    let testPassed = false;
-    let primaryError;
-    const cleanupErrors = [];
+  // State tracked across the try/finally so cleanup is unconditional.
+  let tempDir;
+  let expectedCwd;
+  let launchLease;
+  let reattachLease;
+  let ownedSurface;
+  let testPassed = false;
+  let primaryError;
+  const cleanupErrors = [];
 
-    // Report accumulator — written in finally on both pass and fail paths.
-    const report = {
-      cliVersion: probe.version,
-      available: probe.available,
-      execPath: "cmux (PATH-resolved)",
-    };
+  // Report accumulator — written in finally on both pass and fail paths.
+  const report = {
+    cliVersion: probe.version,
+    available: probe.available,
+    execPath: "cmux (PATH-resolved)",
+  };
 
+  try {
+    // ── Resolve exact cmux binary path for the report ─────────────────────
     try {
-      // ── Resolve exact cmux binary path for the report ─────────────────────
+      const { stdout } = await execFile("which", ["cmux"], { timeout: 2_000 });
+      report.execPath = stdout.trim();
+    } catch {
+      // leave default
+    }
+
+    // ── Temp directory (realpath needed — macOS /tmp → /private/tmp) ───────
+    tempDir = await mkdtemp(join(tmpdir(), "pi-cohort-mux-smoke-"));
+    expectedCwd = await realpath(tempDir);
+    const evidenceFile = join(tempDir, "evidence.json");
+
+    // Synthetic sentinel: random UUID so evidence belongs unambiguously to
+    // THIS specific surface invocation.
+    const sentinel = `smoke-sentinel-${randomUUID()}`;
+
+    // ── detect sanity ─────────────────────────────────────────────────────
+    assert.equal(
+      probe.available,
+      true,
+      "cmux must be available for production smoke",
+    );
+    assert.match(
+      probe.version,
+      /^cmux \d+/,
+      "version string starts with cmux N",
+    );
+
+    // ── launch with real cmux CLI ─────────────────────────────────────────
+    // Pass a non-empty environment so the bootstrap is exercised end-to-end.
+    // The sentinel is also passed as an argv arg for command-delivery proof.
+    // The child echoes both back so the test can verify this surface's
+    // command, cwd, and environment injection all worked.
+    launchLease = await backend.launch({
+      command: process.execPath,
+      args: [SENTINEL_WRITER, evidenceFile, sentinel],
+      cwd: tempDir,
+      environment: { TEST_SMOKE_SENTINEL: sentinel },
+      runId: "smoke-run-1",
+      childId: "smoke-child-1",
+      signal: new AbortController().signal,
+    });
+
+    const handle = launchLease.handle;
+    ownedSurface = {
+      workspaceRef: handle.data.workspaceRef,
+      paneRef: handle.data.paneRef,
+      surfaceRef: handle.data.surfaceRef,
+      surfaceId: handle.surface.id,
+    };
+    const ownedUUID = handle.surface.id;
+
+    report.workspaceRef = handle.data.workspaceRef;
+    report.surfaceRef = handle.data.surfaceRef;
+    report.surfaceUUID = ownedUUID;
+    report.surfaceLabel = handle.display.label;
+
+    // ── assert handle shape ───────────────────────────────────────────────
+    assert.equal(handle.backend, "cmux", "handle.backend is cmux");
+    assert.equal(handle.protocolVersion, 1, "handle.protocolVersion is 1");
+    assert.equal(
+      handle.surface.kind,
+      "surface",
+      "handle.surface.kind is surface",
+    );
+    assert.match(
+      ownedUUID,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      "surface.id is a UUID (from snapshot)",
+    );
+    assert.equal(
+      handle.data.workspaceId,
+      process.env.CMUX_WORKSPACE_ID,
+      "child surface lives in the caller's workspace",
+    );
+    assert.ok(
+      handle.data.paneRef && handle.data.surfaceRef,
+      "paneRef and surfaceRef present in handle.data",
+    );
+    assert.equal(
+      Object.keys(handle.data).sort().join(","),
+      "cwd,paneId,paneRef,surfaceId,surfaceRef,title,type,workspaceId,workspaceRef",
+      "handle.data has the nine expected keys",
+    );
+
+    // ── await sentinel evidence from child (bounded poll) ─────────────────
+    const evidenceRaw = await pollForFile(evidenceFile, EVIDENCE_DEADLINE_MS);
+    const evidence = JSON.parse(evidenceRaw);
+
+    // argv sentinel: proves THIS specific child ran (not another surface).
+    assert.equal(
+      evidence.sentinelEcho,
+      sentinel,
+      "child echoed back the argv sentinel (correct command delivered)",
+    );
+    assert.equal(
+      evidence.sentinelMatch,
+      true,
+      "argv sentinel equality is true in child",
+    );
+
+    // cwd: proves the requested working directory was honored.
+    assert.equal(
+      evidence.cwd,
+      expectedCwd,
+      "child cwd matches the requested cwd from launch request",
+    );
+
+    // env sentinel: proves bootstrap injected the environment into the child.
+    assert.equal(
+      evidence.envSentinelPresent,
+      true,
+      "env sentinel is present (bootstrap injected TEST_SMOKE_SENTINEL)",
+    );
+    assert.equal(
+      evidence.envSentinelMatch,
+      true,
+      "env sentinel value matches the launch-time sentinel",
+    );
+
+    report.evidenceSentinelEcho = evidence.sentinelEcho === sentinel;
+    report.evidenceSentinelMatch = evidence.sentinelMatch;
+    report.evidenceCwdMatch = evidence.cwd === expectedCwd;
+    report.evidenceEnvSentinelPresent = evidence.envSentinelPresent;
+    report.evidenceEnvSentinelMatch = evidence.envSentinelMatch;
+
+    // ── release launch lease (observer: stops subscription, retains surface) ─
+    await launchLease.release();
+    launchLease = null;
+    report.releaseRetained = true;
+
+    // ── reattach to live surface ──────────────────────────────────────────
+    const reattachResult = await backend.reattach(handle);
+    assert.equal(
+      reattachResult.status,
+      "present",
+      "surface still present after release (release retains)",
+    );
+    reattachLease = reattachResult.lease;
+    report.reattachStatus = reattachResult.status;
+
+    // First event from reattach must be a snapshot observation — not a death event.
+    const snapshotFact = (await reattachLease.events.next()).value;
+    assert.equal(
+      snapshotFact.snapshot,
+      true,
+      "first reattach event is a snapshot observation",
+    );
+    assert.notEqual(
+      snapshotFact.type,
+      "surface_closed",
+      "snapshot observation must not be a death event",
+    );
+    assert.notEqual(
+      snapshotFact.type,
+      "exited",
+      "snapshot observation must not be an exited event",
+    );
+
+    // ── release reattach lease (retains surface, stops subscription) ──────
+    await reattachLease.release();
+    reattachLease = null;
+
+    // ── close ONLY the owned surface (by handle) ──────────────────────────
+    await backend.close(handle, "smoke_test_cleanup");
+
+    // ── verify the surface is gone from its pane ──────────────────────────
+    const gone = await verifyGone(ownedSurface);
+    assert.equal(gone, true, "surface is gone after close");
+    report.closedAndGone = gone;
+    ownedSurface = undefined; // cleared — prevents double-close in finally
+    testPassed = true;
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    // Unconditional cleanup — ensures no owned surface leaks on failure.
+    for (const lease of [launchLease, reattachLease]) {
+      if (!lease) continue;
       try {
-        const { stdout } = await execFile("which", ["cmux"], { timeout: 2_000 });
-        report.execPath = stdout.trim();
-      } catch {
-        // leave default
+        await lease.release();
+      } catch (error) {
+        cleanupErrors.push(error);
       }
-
-      // ── Temp directory (realpath needed — macOS /tmp → /private/tmp) ───────
-      tempDir = await mkdtemp(join(tmpdir(), "pi-cohort-mux-smoke-"));
-      expectedCwd = await realpath(tempDir);
-      const evidenceFile = join(tempDir, "evidence.json");
-
-      // Synthetic sentinel: random UUID so evidence belongs unambiguously to
-      // THIS specific surface invocation.
-      const sentinel = `smoke-sentinel-${randomUUID()}`;
-
-      // ── detect sanity ─────────────────────────────────────────────────────
-      assert.equal(probe.available, true, "cmux must be available for production smoke");
-      assert.match(probe.version, /^cmux \d+/, "version string starts with cmux N");
-
-      // ── launch with real cmux CLI ─────────────────────────────────────────
-      // Pass a non-empty environment so the bootstrap is exercised end-to-end.
-      // The sentinel is also passed as an argv arg for command-delivery proof.
-      // The child echoes both back so the test can verify this surface's
-      // command, cwd, and environment injection all worked.
-      launchLease = await backend.launch({
-        command: process.execPath,
-        args: [SENTINEL_WRITER, evidenceFile, sentinel],
-        cwd: tempDir,
-        environment: { TEST_SMOKE_SENTINEL: sentinel },
-        runId: "smoke-run-1",
-        childId: "smoke-child-1",
-        signal: new AbortController().signal,
-      });
-
-      const handle = launchLease.handle;
-      ownedSurface = { workspaceRef: handle.data.workspaceRef, paneRef: handle.data.paneRef, surfaceRef: handle.data.surfaceRef, surfaceId: handle.surface.id };
-      const ownedUUID = handle.surface.id;
-
-      report.workspaceRef = handle.data.workspaceRef;
-      report.surfaceRef = handle.data.surfaceRef;
-      report.surfaceUUID = ownedUUID;
-      report.surfaceLabel = handle.display.label;
-
-      // ── assert handle shape ───────────────────────────────────────────────
-      assert.equal(handle.backend, "cmux", "handle.backend is cmux");
-      assert.equal(handle.protocolVersion, 1, "handle.protocolVersion is 1");
-      assert.equal(handle.surface.kind, "surface", "handle.surface.kind is surface");
-      assert.match(
-        ownedUUID,
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-        "surface.id is a UUID (from snapshot)",
-      );
-      assert.equal(handle.data.workspaceId, process.env.CMUX_WORKSPACE_ID, "child surface lives in the caller's workspace");
-      assert.ok(handle.data.paneRef && handle.data.surfaceRef, "paneRef and surfaceRef present in handle.data");
-      assert.equal(
-        Object.keys(handle.data).sort().join(","),
-        "cwd,paneId,paneRef,surfaceId,surfaceRef,title,type,workspaceId,workspaceRef",
-        "handle.data has the nine expected keys",
-      );
-
-      // ── await sentinel evidence from child (bounded poll) ─────────────────
-      const evidenceRaw = await pollForFile(evidenceFile, EVIDENCE_DEADLINE_MS);
-      const evidence = JSON.parse(evidenceRaw);
-
-      // argv sentinel: proves THIS specific child ran (not another surface).
-      assert.equal(evidence.sentinelEcho, sentinel, "child echoed back the argv sentinel (correct command delivered)");
-      assert.equal(evidence.sentinelMatch, true, "argv sentinel equality is true in child");
-
-      // cwd: proves the requested working directory was honored.
-      assert.equal(evidence.cwd, expectedCwd, "child cwd matches the requested cwd from launch request");
-
-      // env sentinel: proves bootstrap injected the environment into the child.
-      assert.equal(evidence.envSentinelPresent, true, "env sentinel is present (bootstrap injected TEST_SMOKE_SENTINEL)");
-      assert.equal(evidence.envSentinelMatch, true, "env sentinel value matches the launch-time sentinel");
-
-      report.evidenceSentinelEcho = evidence.sentinelEcho === sentinel;
-      report.evidenceSentinelMatch = evidence.sentinelMatch;
-      report.evidenceCwdMatch = evidence.cwd === expectedCwd;
-      report.evidenceEnvSentinelPresent = evidence.envSentinelPresent;
-      report.evidenceEnvSentinelMatch = evidence.envSentinelMatch;
-
-      // ── release launch lease (observer: stops subscription, retains surface) ─
-      await launchLease.release();
-      launchLease = null;
-      report.releaseRetained = true;
-
-      // ── reattach to live surface ──────────────────────────────────────────
-      const reattachResult = await backend.reattach(handle);
-      assert.equal(reattachResult.status, "present", "surface still present after release (release retains)");
-      reattachLease = reattachResult.lease;
-      report.reattachStatus = reattachResult.status;
-
-      // First event from reattach must be a snapshot observation — not a death event.
-      const snapshotFact = (await reattachLease.events.next()).value;
-      assert.equal(snapshotFact.snapshot, true, "first reattach event is a snapshot observation");
-      assert.notEqual(snapshotFact.type, "surface_closed", "snapshot observation must not be a death event");
-      assert.notEqual(snapshotFact.type, "exited", "snapshot observation must not be an exited event");
-
-      // ── release reattach lease (retains surface, stops subscription) ──────
-      await reattachLease.release();
-      reattachLease = null;
-
-      // ── close ONLY the owned surface (by handle) ──────────────────────────
-      await backend.close(handle, "smoke_test_cleanup");
-
-      // ── verify the surface is gone from its pane ──────────────────────────
-      const gone = await verifyGone(ownedSurface);
-      assert.equal(gone, true, "surface is gone after close");
-      report.closedAndGone = gone;
-      ownedSurface = undefined; // cleared — prevents double-close in finally
-      testPassed = true;
-    } catch (error) {
-      primaryError = error;
-    } finally {
-      // Unconditional cleanup — ensures no owned surface leaks on failure.
-      for (const lease of [launchLease, reattachLease]) {
-        if (!lease) continue;
-        try {
-          await lease.release();
-        } catch (error) {
-          cleanupErrors.push(error);
-        }
-      }
-      if (ownedSurface) {
-        // Surface was not confirmed gone by the test body. Close the exact
-        // owned surface ref, then independently wait for authoritative absence.
-        try {
-          await execFile(
-            "cmux",
-            ["close-surface", "--workspace", ownedSurface.workspaceRef, "--surface", ownedSurface.surfaceRef, "--force"],
-            { timeout: CLI_DEADLINE_MS },
-          );
-        } catch (error) {
-          if (!isNotFound(error)) cleanupErrors.push(error);
-        }
-
-        try {
-          const gone = await verifyGone(ownedSurface);
-          if (!gone) {
-            throw new Error(
-              `Owned surface still present ${DISAPPEARANCE_DEADLINE_MS}ms after fallback close: ${ownedSurface.surfaceRef}`,
-            );
-          }
-          ownedSurface = undefined;
-        } catch (error) {
-          cleanupErrors.push(error);
-        }
-      }
-      if (tempDir) {
-        try {
-          await rm(tempDir, { recursive: true, force: true });
-        } catch (error) {
-          cleanupErrors.push(error);
-        }
-      }
-
-      report.primaryFailure = primaryError?.message;
-      report.cleanupErrors = cleanupErrors.map((error) => error.message);
-      report.ownedSurfaceCleanedUp = !ownedSurface;
-      report.rawExit = testPassed && cleanupErrors.length === 0 ? 0 : 1;
-
-      // Write required report to /tmp.
-      const reportLines = [
-        "# pi-cohort-mux production cmux smoke report",
-        "",
-        `- raw exit: ${report.rawExit ?? 1}`,
-        `- cli version: ${report.cliVersion}`,
-        `- exact path executed: ${report.execPath}`,
-        `- available: ${report.available}`,
-        `- caller workspace ref: ${report.workspaceRef ?? "(not launched)"}`,
-        `- surface ref: ${report.surfaceRef ?? "(not created)"}`,
-        `- surface UUID: ${report.surfaceUUID ?? "(not created)"}`,
-        `- surface label: ${report.surfaceLabel ?? "(not created)"}`,
-        `- argv sentinel match: ${report.evidenceSentinelMatch ?? "(not verified)"}`,
-        `- argv sentinel echo: ${report.evidenceSentinelEcho ?? "(not verified)"}`,
-        `- child cwd match: ${report.evidenceCwdMatch ?? "(not verified)"}`,
-        `- env sentinel present (FIFO): ${report.evidenceEnvSentinelPresent ?? "(not verified)"}`,
-        `- env sentinel match (FIFO): ${report.evidenceEnvSentinelMatch ?? "(not verified)"}`,
-        `- release retained surface: ${report.releaseRetained ?? false}`,
-        `- reattach status: ${report.reattachStatus ?? "(not attempted)"}`,
-        `- closed and gone: ${report.closedAndGone ?? false}`,
-        `- primary failure: ${report.primaryFailure ?? "none"}`,
-        `- cleanup errors: ${report.cleanupErrors.length > 0 ? report.cleanupErrors.join("; ") : "none"}`,
-        `- surface cleanup evidence: ${
-          report.ownedSurfaceCleanedUp
-            ? "no owned surface remains"
-            : "LEAKED — surface close failed or was bypassed"
-        }`,
-        "",
-        "## Notes",
-        "Environment injected via child-side bootstrap (env-bootstrap.sh) reading",
-        "an owner-only FIFO. The cmux server never opens the FIFO; the bootstrap",
-        "runs inside the pane and exec()s the real command after injecting env.",
-      ];
+    }
+    if (ownedSurface) {
+      // Surface was not confirmed gone by the test body. Close the exact
+      // owned surface ref, then independently wait for authoritative absence.
       try {
-        await writeFile(
-          "/tmp/pi-cohort-mux-production-cmux-smoke.md",
-          reportLines.join("\n") + "\n",
-          "utf8",
+        await execFile(
+          "cmux",
+          [
+            "close-surface",
+            "--workspace",
+            ownedSurface.workspaceRef,
+            "--surface",
+            ownedSurface.surfaceRef,
+            "--force",
+          ],
+          { timeout: CLI_DEADLINE_MS },
         );
+      } catch (error) {
+        if (!isNotFound(error)) cleanupErrors.push(error);
+      }
+
+      try {
+        const gone = await verifyGone(ownedSurface);
+        if (!gone) {
+          // biome-ignore lint/correctness/noUnsafeFinally: caught just below and recorded as a cleanup error
+          throw new Error(
+            `Owned surface still present ${DISAPPEARANCE_DEADLINE_MS}ms after fallback close: ${ownedSurface.surfaceRef}`,
+          );
+        }
+        ownedSurface = undefined;
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (tempDir) {
+      try {
+        await rm(tempDir, { recursive: true, force: true });
       } catch (error) {
         cleanupErrors.push(error);
       }
     }
 
-    if (primaryError && cleanupErrors.length > 0) {
-      throw new AggregateError(
-        [primaryError, ...cleanupErrors],
-        "Production cmux smoke and its cleanup both failed",
+    report.primaryFailure = primaryError?.message;
+    report.cleanupErrors = cleanupErrors.map((error) => error.message);
+    report.ownedSurfaceCleanedUp = !ownedSurface;
+    report.rawExit = testPassed && cleanupErrors.length === 0 ? 0 : 1;
+
+    // Write required report to /tmp.
+    const reportLines = [
+      "# pi-cohort-mux production cmux smoke report",
+      "",
+      `- raw exit: ${report.rawExit ?? 1}`,
+      `- cli version: ${report.cliVersion}`,
+      `- exact path executed: ${report.execPath}`,
+      `- available: ${report.available}`,
+      `- caller workspace ref: ${report.workspaceRef ?? "(not launched)"}`,
+      `- surface ref: ${report.surfaceRef ?? "(not created)"}`,
+      `- surface UUID: ${report.surfaceUUID ?? "(not created)"}`,
+      `- surface label: ${report.surfaceLabel ?? "(not created)"}`,
+      `- argv sentinel match: ${report.evidenceSentinelMatch ?? "(not verified)"}`,
+      `- argv sentinel echo: ${report.evidenceSentinelEcho ?? "(not verified)"}`,
+      `- child cwd match: ${report.evidenceCwdMatch ?? "(not verified)"}`,
+      `- env sentinel present (FIFO): ${report.evidenceEnvSentinelPresent ?? "(not verified)"}`,
+      `- env sentinel match (FIFO): ${report.evidenceEnvSentinelMatch ?? "(not verified)"}`,
+      `- release retained surface: ${report.releaseRetained ?? false}`,
+      `- reattach status: ${report.reattachStatus ?? "(not attempted)"}`,
+      `- closed and gone: ${report.closedAndGone ?? false}`,
+      `- primary failure: ${report.primaryFailure ?? "none"}`,
+      `- cleanup errors: ${report.cleanupErrors.length > 0 ? report.cleanupErrors.join("; ") : "none"}`,
+      `- surface cleanup evidence: ${
+        report.ownedSurfaceCleanedUp
+          ? "no owned surface remains"
+          : "LEAKED — surface close failed or was bypassed"
+      }`,
+      "",
+      "## Notes",
+      "Environment injected via child-side bootstrap (env-bootstrap.sh) reading",
+      "an owner-only FIFO. The cmux server never opens the FIFO; the bootstrap",
+      "runs inside the pane and exec()s the real command after injecting env.",
+    ];
+    try {
+      await writeFile(
+        "/tmp/pi-cohort-mux-production-cmux-smoke.md",
+        `${reportLines.join("\n")}\n`,
+        "utf8",
       );
+    } catch (error) {
+      cleanupErrors.push(error);
     }
-    if (primaryError) throw primaryError;
-    if (cleanupErrors.length > 0) {
-      throw new AggregateError(cleanupErrors, "Production cmux smoke cleanup failed");
-    }
-  },
-);
+  }
+
+  if (primaryError && cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [primaryError, ...cleanupErrors],
+      "Production cmux smoke and its cleanup both failed",
+    );
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(
+      cleanupErrors,
+      "Production cmux smoke cleanup failed",
+    );
+  }
+});
 
 // ─── Probe diagnostic (always included, low overhead) ────────────────────────
 
@@ -367,26 +463,59 @@ test("production cmux smoke: probe diagnostic — opt-in guard and availability"
   assert.equal(isNotFound(new Error("Error: NOT_FOUND: Pane not found")), true);
   assert.equal(isNotFound(new Error("Error: not_foundation failure")), false);
   assert.equal(isNotFound(new Error("Error: transport failure")), false);
-  assert.equal(isNotFound(Object.assign(new Error("Command failed"), { stderr: "Error: Workspace ref not found: workspace:7" })), true);
-  assert.equal(isNotFound(Object.assign(new Error("Command failed"), { stderr: "Error: Pane ref not found: pane:7" })), true);
+  assert.equal(
+    isNotFound(
+      Object.assign(new Error("Command failed"), {
+        stderr: "Error: Workspace ref not found: workspace:7",
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    isNotFound(
+      Object.assign(new Error("Command failed"), {
+        stderr: "Error: Pane ref not found: pane:7",
+      }),
+    ),
+    true,
+  );
 
   if (!optedIn) {
     // Not opted in: skipReason must be a non-empty string.
-    assert.equal(typeof skipReason, "string", "skip reason is a string when not opted in");
+    assert.equal(
+      typeof skipReason,
+      "string",
+      "skip reason is a string when not opted in",
+    );
     assert.ok(skipReason.length > 0, "skip reason is non-empty");
     return;
   }
   // Opted in: probe must have consistent shape.
-  assert.equal(typeof probe.available, "boolean", "probe.available is a boolean");
+  assert.equal(
+    typeof probe.available,
+    "boolean",
+    "probe.available is a boolean",
+  );
   assert.equal(typeof probe.version, "string", "probe.version is a string");
-  assert.ok(Array.isArray(probe.capabilities), "probe.capabilities is an array");
+  assert.ok(
+    Array.isArray(probe.capabilities),
+    "probe.capabilities is an array",
+  );
   if (probe.available) {
-    assert.match(probe.version, /^cmux \d+/, "version starts with cmux N when available");
+    assert.match(
+      probe.version,
+      /^cmux \d+/,
+      "version starts with cmux N when available",
+    );
     assert.ok(
       probe.capabilities.includes("events.v1"),
       "events.v1 is in capabilities when available",
     );
   } else {
-    assert.equal(typeof skipReason, "string", "skipReason explains unavailability");
+    assert.equal(
+      typeof skipReason,
+      "string",
+      "skipReason explains unavailability",
+    );
   }
 });

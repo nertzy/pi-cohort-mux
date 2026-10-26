@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { fileURLToPath } from "node:url";
 import test, { beforeEach } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { resolvePi } from "./support/pi-runtime.mjs";
 
-const fixture = (name) => new URL(`fixtures/registration/${name}`, import.meta.url);
+const fixture = (name) =>
+  new URL(`fixtures/registration/${name}`, import.meta.url);
 const fixturePath = (name) => fileURLToPath(fixture(name));
 const registryKey = Symbol.for("pi-cohort.registration-spike.backends.v1");
 const probeTimeout = 10_000;
 
 async function stopChild(child, close) {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null)
+    return;
 
   child.kill("SIGTERM");
   await Promise.race([
@@ -27,16 +29,23 @@ async function stopChild(child, close) {
 }
 
 async function probePi(pi, extensions) {
-  const child = spawn(pi, [
-    "--mode",
-    "rpc",
-    "--no-session",
-    "--no-extensions",
-    ...extensions.flatMap((extension) => ["--extension", fixturePath(extension)]),
-  ], {
-    cwd: process.cwd(),
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  const child = spawn(
+    pi,
+    [
+      "--mode",
+      "rpc",
+      "--no-session",
+      "--no-extensions",
+      ...extensions.flatMap((extension) => [
+        "--extension",
+        fixturePath(extension),
+      ]),
+    ],
+    {
+      cwd: process.cwd(),
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
   const close = once(child, "close");
   let stdout = "";
   let stderr = "";
@@ -44,15 +53,25 @@ async function probePi(pi, extensions) {
 
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { stdout += chunk; });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
 
   try {
-    child.stdin.end('{"id":"probe","type":"prompt","message":"/registration-spike"}\n');
+    child.stdin.end(
+      '{"id":"probe","type":"prompt","message":"/registration-spike"}\n',
+    );
     const [exitCode, signal] = await Promise.race([
       close,
       new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error(`Pi RPC probe timed out after ${probeTimeout}ms`)), probeTimeout);
+        timeout = setTimeout(
+          () =>
+            reject(new Error(`Pi RPC probe timed out after ${probeTimeout}ms`)),
+          probeTimeout,
+        );
       }),
     ]);
 
@@ -67,7 +86,8 @@ const { executable: pi = null, skipReason: piSkipReason } = resolvePi();
 const apiA = await import(fixture("public-api-a.mjs"));
 const apiB = await import(fixture("public-api-b.mjs"));
 const core = (await import(fixture("fake-core-extension.mjs"))).default;
-const companion = (await import(fixture("fake-companion-extension.mjs"))).default;
+const companion = (await import(fixture("fake-companion-extension.mjs")))
+  .default;
 
 beforeEach(() => {
   delete globalThis[registryKey];
@@ -75,33 +95,50 @@ beforeEach(() => {
 
 test("companion-first registration is resolved when the core command executes", () => {
   const commands = new Map();
-  companion({ registerCommand: (name, command) => commands.set(name, command) });
+  companion({
+    registerCommand: (name, command) => commands.set(name, command),
+  });
   core({ registerCommand: (name, command) => commands.set(name, command) });
 
-  assert.deepEqual(commands.get("registration-spike").handler(), ["fake-backend"]);
+  assert.deepEqual(commands.get("registration-spike").handler(), [
+    "fake-backend",
+  ]);
 });
 
 test("core-first registration is resolved when the core command executes", () => {
   const commands = new Map();
   core({ registerCommand: (name, command) => commands.set(name, command) });
-  companion({ registerCommand: (name, command) => commands.set(name, command) });
+  companion({
+    registerCommand: (name, command) => commands.set(name, command),
+  });
 
-  assert.deepEqual(commands.get("registration-spike").handler(), ["fake-backend"]);
+  assert.deepEqual(commands.get("registration-spike").handler(), [
+    "fake-backend",
+  ]);
 });
 
 test("separate public API module copies share one versioned global hub", () => {
   apiA.registerBackend({ name: "alpha" });
   apiB.registerBackend({ name: "beta" });
 
-  assert.deepEqual(apiA.listBackends().map((backend) => backend.name), ["alpha", "beta"]);
-  assert.deepEqual(apiB.listBackends().map((backend) => backend.name), ["alpha", "beta"]);
+  assert.deepEqual(
+    apiA.listBackends().map((backend) => backend.name),
+    ["alpha", "beta"],
+  );
+  assert.deepEqual(
+    apiB.listBackends().map((backend) => backend.name),
+    ["alpha", "beta"],
+  );
 });
 
 test("duplicate backend names fail loudly without replacing the original", () => {
   const original = { name: "duplicate" };
   apiA.registerBackend(original);
 
-  assert.throws(() => apiB.registerBackend({ name: "duplicate" }), /already registered/);
+  assert.throws(
+    () => apiB.registerBackend({ name: "duplicate" }),
+    /already registered/,
+  );
   assert.equal(apiA.listBackends()[0], original);
 });
 
@@ -116,7 +153,10 @@ test("a disposer permits re-registration after reload", () => {
   dispose();
   apiB.registerBackend({ name: "reloadable" });
 
-  assert.deepEqual(apiA.listBackends().map((backend) => backend.name), ["reloadable"]);
+  assert.deepEqual(
+    apiA.listBackends().map((backend) => backend.name),
+    ["reloadable"],
+  );
 });
 
 test("a stale disposer cannot remove a re-registered backend", () => {
@@ -134,11 +174,17 @@ test("backend enumeration is deterministic by backend name", () => {
   apiB.registerBackend({ name: "alpha" });
   apiA.registerBackend({ name: "middle" });
 
-  assert.deepEqual(apiB.listBackends().map((backend) => backend.name), ["alpha", "middle", "zulu"]);
+  assert.deepEqual(
+    apiB.listBackends().map((backend) => backend.name),
+    ["alpha", "middle", "zulu"],
+  );
 });
 
 for (const [name, extensions] of [
-  ["companion-first", ["fake-companion-extension.mjs", "fake-core-extension.mjs"]],
+  [
+    "companion-first",
+    ["fake-companion-extension.mjs", "fake-core-extension.mjs"],
+  ],
   ["core-first", ["fake-core-extension.mjs", "fake-companion-extension.mjs"]],
 ]) {
   test(`Pi RPC smoke discovers a backend with ${name} CLI extension order`, {

@@ -3,8 +3,24 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*"],
-  "engines": { "node": ">=20" },
-  "scripts": { "test": "node --test packages/*/test/*.test.mjs test/*.test.mjs" },
-  "devDependencies": { "jiti": "^2.7.0", "pi-cohort": "7.4.1" }
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "test": "node --test packages/*/test/*.test.mjs test/*.test.mjs",
+    "check": "npm run lint && npm test",
+    "lint": "npm run lint:biome && npm run lint:markdown && actionlint .github/workflows/*.yml",
+    "lint:biome": "biome check .",
+    "lint:markdown": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#tmp\" \"#.worktrees\"",
+    "lint:fix": "biome check --write . && markdownlint-cli2 --fix \"**/*.md\" \"#node_modules\" \"#tmp\" \"#.worktrees\""
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "jiti": "^2.7.0",
+    "markdownlint-cli2": "^0.23.3",
+    "pi-cohort": "7.4.1"
+  }
 }

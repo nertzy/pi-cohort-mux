@@ -1,4 +1,10 @@
-export function createLease({ handle, request, eventQueue, reconcile, releaseTransport }) {
+export function createLease({
+  handle,
+  request,
+  eventQueue,
+  reconcile,
+  releaseTransport,
+}) {
   let releasePromise;
   let cleanupCompleted = false;
   // Ending iteration (`for await` break, return()) releases the lease through
@@ -11,7 +17,9 @@ export function createLease({ handle, request, eventQueue, reconcile, releaseTra
       await release();
       return { done: true };
     },
-    [Symbol.asyncIterator]() { return this; },
+    [Symbol.asyncIterator]() {
+      return this;
+    },
   };
   function release() {
     if (cleanupCompleted) return Promise.resolve();
@@ -27,7 +35,9 @@ export function createLease({ handle, request, eventQueue, reconcile, releaseTra
         eventQueue.finish();
       }
     })();
-    releasePromise.catch(() => { releasePromise = undefined; });
+    releasePromise.catch(() => {
+      releasePromise = undefined;
+    });
     return releasePromise;
   }
   return {
@@ -43,8 +53,14 @@ export function createLease({ handle, request, eventQueue, reconcile, releaseTra
     },
     release,
     push: eventQueue.push,
-    get suspended() { return eventQueue.suspended; },
-    get released() { return eventQueue.released; },
-    get queuedEvents() { return eventQueue.queuedEvents; },
+    get suspended() {
+      return eventQueue.suspended;
+    },
+    get released() {
+      return eventQueue.released;
+    },
+    get queuedEvents() {
+      return eventQueue.queuedEvents;
+    },
   };
 }

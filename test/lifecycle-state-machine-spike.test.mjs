@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createFakeScheduler, createMachine } from "./fixtures/lifecycle/state-machine.mjs";
+import {
+  createFakeScheduler,
+  createMachine,
+} from "./fixtures/lifecycle/state-machine.mjs";
 
 function machine() {
   const scheduler = createFakeScheduler();
@@ -45,7 +48,10 @@ test("ready deadline records blocked_before_ready without terminal parsing", () 
 
   assert.equal(state.snapshot().phase, "blocked_before_ready");
   assert.equal(state.snapshot().intent, "retain");
-  assert.equal(JSON.stringify(state.snapshot()).match(/mise|direnv|credential/i), null);
+  assert.equal(
+    JSON.stringify(state.snapshot()).match(/mise|direnv|credential/i),
+    null,
+  );
 });
 
 test("late authoritative ready recovers a missing-ready deadline while the surface remains valid", () => {
@@ -92,7 +98,10 @@ test("advisory inactivity needs attention but never claims a hang or kills", () 
   assert.equal(state.snapshot().phase, "needs_attention");
   assert.equal(state.snapshot().facts.activity, "no_observed_activity");
   assert.equal(state.snapshot().intent, "retain");
-  assert.equal(JSON.stringify(state.snapshot()).match(/hung|healthy|dead|kill/i), null);
+  assert.equal(
+    JSON.stringify(state.snapshot()).match(/hung|healthy|dead|kill/i),
+    null,
+  );
 });
 
 test("an observed mux inactivity fact has the same advisory classification", () => {
@@ -150,7 +159,8 @@ test("settled without result becomes result_missing after a grace deadline", () 
 
 test("a settled BLOCKED result is a normal delivery candidate without fixture classification", () => {
   const { state } = machine();
-  const blocked = "BLOCKED: approval needed\nDone: inspected\nRemaining: decide";
+  const blocked =
+    "BLOCKED: approval needed\nDone: inspected\nRemaining: decide";
   send(state, "surface_created");
   send(state, "ready");
   send(state, "result", { value: blocked });
@@ -158,7 +168,12 @@ test("a settled BLOCKED result is a normal delivery candidate without fixture cl
 
   assert.equal(state.snapshot().phase, "delivery_candidate");
   assert.equal(state.snapshot().facts.result, blocked);
-  assert.equal(JSON.stringify(state.snapshot()).match(/blocked_live_child|BLOCKED result/i), null);
+  assert.equal(
+    JSON.stringify(state.snapshot()).match(
+      /blocked_live_child|BLOCKED result/i,
+    ),
+    null,
+  );
 });
 
 test("exit before settled is child_crashed with no model fallback", () => {
@@ -217,7 +232,13 @@ test("paused calls remain paused after a late result and settlement", () => {
   assert.equal(state.snapshot().intent, "retain");
   assert.equal(state.snapshot().facts.result, "late");
   assert.equal(state.snapshot().facts.settled, true);
-  assert.deepEqual(state.snapshot().provenance.slice(-2).map((fact) => fact.type), ["result", "settled"]);
+  assert.deepEqual(
+    state
+      .snapshot()
+      .provenance.slice(-2)
+      .map((fact) => fact.type),
+    ["result", "settled"],
+  );
 });
 
 test("requested closures remain requested after a late result and settlement", () => {
@@ -231,7 +252,13 @@ test("requested closures remain requested after a late result and settlement", (
   assert.equal(state.snapshot().intent, "close");
   assert.equal(state.snapshot().facts.result, "late");
   assert.equal(state.snapshot().facts.settled, true);
-  assert.deepEqual(state.snapshot().provenance.slice(-2).map((fact) => fact.type), ["result", "settled"]);
+  assert.deepEqual(
+    state
+      .snapshot()
+      .provenance.slice(-2)
+      .map((fact) => fact.type),
+    ["result", "settled"],
+  );
 });
 
 test("result-missing calls remain result missing after a late result", () => {
@@ -285,16 +312,63 @@ test("the fixture has no removed live-messaging or worktree lifecycle vocabulary
   const { state } = machine();
   send(state, "surface_created");
 
-  assert.equal(JSON.stringify(state.snapshot()).match(/session_rebound|taken_over|retainWorktree|steer|receipt|intercom/i), null);
+  assert.equal(
+    JSON.stringify(state.snapshot()).match(
+      /session_rebound|taken_over|retainWorktree|steer|receipt|intercom/i,
+    ),
+    null,
+  );
 });
 
 test("race table preserves fact provenance, reconciliation, and close intent", () => {
   const races = [
-    { events: [["exited", { status: 1, signal: null }], ["surface_closed", { requested: false }]], phase: "startup_failed", intent: "retain", source: "mux" },
-    { events: [["surface_closed", { requested: false }], ["exited", { status: 1, signal: null }]], phase: "startup_failed", intent: "retain", source: "mux" },
-    { events: [["result", { value: "ok" }], ["settled"], ["surface_closed", { requested: false }]], phase: "delivery_candidate", intent: "close_after_delivery", source: "mux" },
-    { events: [["surface_closed", { requested: false }], ["result", { value: "ok" }], ["settled"]], phase: "delivery_candidate", intent: "close_after_delivery", source: "mux" },
-    { events: [["backend_disconnected", { source: "control" }], ["backend_disconnected", { source: "control" }]], phase: "control_disconnected", intent: "retain", source: "control" },
+    {
+      events: [
+        ["exited", { status: 1, signal: null }],
+        ["surface_closed", { requested: false }],
+      ],
+      phase: "startup_failed",
+      intent: "retain",
+      source: "mux",
+    },
+    {
+      events: [
+        ["surface_closed", { requested: false }],
+        ["exited", { status: 1, signal: null }],
+      ],
+      phase: "startup_failed",
+      intent: "retain",
+      source: "mux",
+    },
+    {
+      events: [
+        ["result", { value: "ok" }],
+        ["settled"],
+        ["surface_closed", { requested: false }],
+      ],
+      phase: "delivery_candidate",
+      intent: "close_after_delivery",
+      source: "mux",
+    },
+    {
+      events: [
+        ["surface_closed", { requested: false }],
+        ["result", { value: "ok" }],
+        ["settled"],
+      ],
+      phase: "delivery_candidate",
+      intent: "close_after_delivery",
+      source: "mux",
+    },
+    {
+      events: [
+        ["backend_disconnected", { source: "control" }],
+        ["backend_disconnected", { source: "control" }],
+      ],
+      phase: "control_disconnected",
+      intent: "retain",
+      source: "control",
+    },
   ];
 
   for (const race of races) {

@@ -21,10 +21,25 @@ Do not import private `src/...` paths from dependencies. The public
 
 ## Changes
 
-Write tests first for behavior changes, then run:
+Development needs Node.js 26 or newer and
+[actionlint](https://github.com/rhysd/actionlint) 1.7.12, which `npm run lint`
+calls and `npm ci` does not install. On macOS, install it with Homebrew:
 
 ```sh
-npm test
+brew install actionlint
 ```
+
+For other platforms, follow actionlint's
+[installation instructions](https://github.com/rhysd/actionlint/blob/v1.7.12/docs/install.md).
+CI downloads the same release from the upstream project.
+
+Write tests first for behavior changes, then run lint and the tests:
+
+```sh
+npm ci
+npm run check
+```
+
+`npm run lint:fix` applies Biome and markdownlint fixes.
 
 The package is private. Do not publish it.
