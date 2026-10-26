@@ -18,42 +18,59 @@ const core = JSON.parse(
     new URL("../packages/pi-cohort-mux/package.json", import.meta.url),
   ),
 );
-const adapter = JSON.parse(
-  await readFile(
-    new URL("../packages/pi-cohort-mux-cmux/package.json", import.meta.url),
-  ),
+const adapters = await Promise.all(
+  ["cmux", "herdr"].map(async (backend) => ({
+    backend,
+    directory: `./packages/pi-cohort-mux-${backend}`,
+    manifest: JSON.parse(
+      await readFile(
+        new URL(
+          `../packages/pi-cohort-mux-${backend}/package.json`,
+          import.meta.url,
+        ),
+      ),
+    ),
+  })),
 );
 const piLoader = piModule(resolvePi(), "dist/core/extensions/index.js");
 
-test("root is a private workspace and only the adapter activates in Pi", () => {
+test("root is a private workspace and only the adapters activate in Pi", () => {
   assert.equal(root.private, true);
   assert.equal(core.private, true);
-  assert.equal(adapter.private, true);
   assert.deepEqual(root.workspaces, ["packages/*"]);
   assert.equal(root.pi, undefined);
   assert.equal(core.pi, undefined);
-  assert.deepEqual(adapter.pi.extensions, ["./src/index.js"]);
-  assert.equal(adapter.dependencies["pi-cohort-mux"], core.version);
-  assert.equal(
-    adapter.dependencies["pi-cohort"],
-    undefined,
-    "the host's pi-cohort is shared, never a private copy",
-  );
-  assert.equal(adapter.peerDependencies["pi-cohort"], "^7.0.0");
-  assert.equal(
-    adapter.peerDependencies["@earendil-works/pi-coding-agent"],
-    ">=0.85.0",
-  );
+  for (const { manifest: adapter } of adapters) {
+    assert.equal(adapter.private, true);
+    assert.deepEqual(adapter.pi.extensions, ["./src/index.js"]);
+    assert.equal(adapter.dependencies["pi-cohort-mux"], core.version);
+    assert.equal(
+      adapter.dependencies["pi-cohort"],
+      undefined,
+      "the host's pi-cohort is shared, never a private copy",
+    );
+    assert.equal(adapter.peerDependencies["pi-cohort"], "^7.0.0");
+    assert.equal(
+      adapter.peerDependencies["@earendil-works/pi-coding-agent"],
+      ">=0.85.0",
+    );
+  }
 });
 
-test("adapter reload factory is a public package export", async () => {
-  const module = await import("pi-cohort-mux-cmux/execution-backend");
-  assert.equal(typeof module.createCmuxExecutionBackend, "function");
-  assert.equal(module.createCmuxExecutionBackend().name, "cmux");
+test("adapter reload factories are public package exports", async () => {
+  const cmux = await import("pi-cohort-mux-cmux/execution-backend");
+  assert.equal(cmux.createCmuxExecutionBackend().name, "cmux");
   await assertReloadNamesItself(
     "pi-cohort-mux-cmux",
-    module,
-    module.createCmuxExecutionBackend(),
+    cmux,
+    cmux.createCmuxExecutionBackend(),
+  );
+  const herdr = await import("pi-cohort-mux-herdr/execution-backend");
+  assert.equal(herdr.createHerdrExecutionBackend().name, "herdr");
+  await assertReloadNamesItself(
+    "pi-cohort-mux-herdr",
+    herdr,
+    herdr.createHerdrExecutionBackend(),
   );
 });
 
@@ -73,9 +90,16 @@ async function assertReloadNamesItself(packageName, module, backend) {
   assert.equal(module[reload.factoryExport]().name, backend.name);
 }
 
-test("packed adapter alone installs core transitively and activates through Pi", {
-  skip: piLoader.skipReason ?? false,
-}, async () => {
+for (const { backend, directory: adapterDirectory, manifest } of adapters)
+  test(
+    `packed ${backend} adapter alone installs core transitively and activates through Pi`,
+    {
+      skip: piLoader.skipReason ?? false,
+    },
+    () => packedAdapterActivates(backend, adapterDirectory, manifest),
+  );
+
+async function packedAdapterActivates(backend, adapterDirectory, adapter) {
   const directory = await mkdtemp(join(tmpdir(), "pi-cohort-mux-consumer-"));
   let registry;
   try {
@@ -92,7 +116,7 @@ test("packed adapter alone installs core transitively and activates through Pi",
       );
     };
     const corePack = await pack("./packages/pi-cohort-mux");
-    const adapterPack = await pack("./packages/pi-cohort-mux-cmux");
+    const adapterPack = await pack(adapterDirectory);
     const coreArchive = await readFile(corePack);
     registry = createServer(async (request, response) => {
       if (request.url === "/pi-cohort-mux") {
@@ -145,7 +169,7 @@ test("packed adapter alone installs core transitively and activates through Pi",
       await readFile(join(directory, "package.json")),
     );
     assert.deepEqual(Object.keys(consumerManifest.dependencies), [
-      "pi-cohort-mux-cmux",
+      adapter.name,
     ]);
     const installed = JSON.parse(
       await readFile(
@@ -157,14 +181,14 @@ test("packed adapter alone installs core transitively and activates through Pi",
     const { loadExtensions } = await import(piLoader.url);
     const adapterEntry = join(
       directory,
-      "node_modules/pi-cohort-mux-cmux/src/index.js",
+      `node_modules/${adapter.name}/src/index.js`,
     );
     const loaded = await loadExtensions([adapterEntry], directory);
     assert.deepEqual(loaded.errors, []);
     assert.equal(loaded.extensions.length, 1);
     const hub = globalThis[Symbol.for("pi-cohort.execution-backends.v1")];
-    assert.equal(hub.backends.get("cmux")?.name, "cmux");
-    assert.deepEqual(Object.keys(hub.reloadDescriptors.get("cmux")).sort(), [
+    assert.equal(hub.backends.get(backend)?.name, backend);
+    assert.deepEqual(Object.keys(hub.reloadDescriptors.get(backend)).sort(), [
       "factoryExport",
       "packageJsonUrl",
       "protocolVersion",
@@ -174,4 +198,4 @@ test("packed adapter alone installs core transitively and activates through Pi",
     if (registry) await new Promise((resolve) => registry.close(resolve));
     await rm(directory, { recursive: true, force: true });
   }
-});
+}
