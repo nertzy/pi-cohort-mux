@@ -120,6 +120,13 @@ test("placement: PI_COHORT_MUX_HERDR_PLACEMENT selects it and defaults to tab", 
   );
 });
 
+test("declares HERDR_* as surface-owned so attempts keep the pane's identity", () => {
+  assert.deepEqual(
+    createHerdrExecutionBackend({ env: {} }).surfaceEnvironmentPrefixes,
+    ["HERDR_"],
+  );
+});
+
 // ─── launch: tab placement ───────────────────────────────────────────────────
 
 test("tab launch: subscribes first, then runs the launcher argv in a new background tab", async (t) => {

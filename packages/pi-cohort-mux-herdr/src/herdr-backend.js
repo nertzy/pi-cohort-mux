@@ -135,11 +135,17 @@ function labelFor(request) {
   return text.slice(0, 32) || "pi";
 }
 
+/**
+ * herdr sets HERDR_* (pane, tab, workspace, socket, HERDR_ENV) in every pane it
+ * spawns, argv tabs included, so the child pane already has its own values.
+ */
+const SURFACE_ENVIRONMENT_PREFIX = "HERDR_";
+
 /** Drop inherited HERDR_* variables; herdr gives the pane its own. */
 function scrubMuxEnvironment(environment) {
   return Object.fromEntries(
     Object.entries(environment ?? {}).filter(
-      ([key]) => !key.startsWith("HERDR_"),
+      ([key]) => !key.startsWith(SURFACE_ENVIRONMENT_PREFIX),
     ),
   );
 }
@@ -539,6 +545,7 @@ export function createHerdrExecutionBackend({
     name: "herdr",
     reload: RELOAD,
     protocolVersion: 1,
+    surfaceEnvironmentPrefixes: [SURFACE_ENVIRONMENT_PREFIX],
     placement,
 
     async detect() {
