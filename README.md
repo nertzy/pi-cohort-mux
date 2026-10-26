@@ -19,7 +19,10 @@ orchestration, control, reporting, and detached reload.
 
 In Pi's transcript, the adapter adds an accent `[cmux]` badge to a `subagent`
 call that ran in a cmux surface. The call's frame keeps Pi's usual pending,
-success, and error colors.
+success, and error colors. An adapter's Pi extension is one call to
+`installMuxAdapter(pi, backend)` from `pi-cohort-mux/adapter`, which registers
+the backend with `pi-cohort`, using the `reload` descriptor the backend carries,
+and names the badge after the backend's `name`.
 
 For workspace development:
 
