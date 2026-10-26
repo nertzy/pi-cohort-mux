@@ -1,20 +1,23 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
-// Marks a subagent call that ran in a cmux surface with an accent `[cmux]`
-// badge beside pi-cohort's own `[async]` badge. Pi's frame and its pending,
-// success, and error colors stay as they are.
+// Marks a subagent call that ran on an adapter's backend with an accent
+// `[<backend>]` badge beside pi-cohort's own `[async]` badge. Pi's frame and
+// its pending, success, and error colors stay as they are. Each adapter
+// badges only its own backend, so several adapters' renderers can stack.
 
 const ROW = Symbol.for("pi-cohort-mux.tool-badge.row");
 
-export const ranInPane = (details) =>
+export const ranOn = (details, backend) =>
   Array.isArray(details?.results) &&
   details.results.some(
-    (result) => result?.executionSurface?.handle?.backend === "cmux",
+    (result) => result?.executionSurface?.handle?.backend === backend,
   );
 
-function rowOf(context) {
-  context.state[ROW] ??= {};
-  return context.state[ROW];
+function rowOf(context, backend) {
+  context.state[ROW] ??= new Map();
+  const rows = context.state[ROW];
+  if (!rows.has(backend)) rows.set(backend, {});
+  return rows.get(backend);
 }
 
 // pi-cohort's call line is padded to the full width; the badge goes after
@@ -52,24 +55,24 @@ class BadgedCall {
   }
 }
 
-export function badgeSubagentRenderers(base) {
+export function badgeSubagentRenderers(base, backend) {
   if (!base?.renderCall || !base.renderResult) return base;
   return {
     ...base,
     renderCall(args, theme, context) {
-      const row = rowOf(context);
+      const row = rowOf(context, backend);
       const inner = base.renderCall(args, theme, {
         ...context,
         lastComponent: context.lastComponent?.inner,
       });
-      return new BadgedCall(inner, row, theme.fg("accent", "[cmux]"));
+      return new BadgedCall(inner, row, theme.fg("accent", `[${backend}]`));
     },
     renderResult(result, options, theme, context) {
-      rowOf(context).inPane = ranInPane(result.details);
+      rowOf(context, backend).inPane = ranOn(result.details, backend);
       return base.renderResult(result, options, theme, context);
     },
   };
 }
 
-export const subagentBadgeResolver = (toolName, next) =>
-  toolName === "subagent" ? badgeSubagentRenderers(next()) : next();
+export const createSubagentBadgeResolver = (backend) => (toolName, next) =>
+  toolName === "subagent" ? badgeSubagentRenderers(next(), backend) : next();

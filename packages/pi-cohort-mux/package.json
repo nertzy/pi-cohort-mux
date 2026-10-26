@@ -4,12 +4,28 @@
   "description": "Reusable secure transport and lease mechanics for pi-cohort multiplexer adapters",
   "private": true,
   "type": "module",
-  "exports": ".\/src\/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./adapter": "./src/adapter.js",
+    "./tool-badge": "./src/tool-badge.js"
+  },
   "files": [
     "src"
   ],
   "engines": {
     "node": ">=26"
+  },
+  "peerDependencies": {
+    "pi-cohort": "^7.0.0",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "pi-cohort": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
   },
   "license": "MIT",
   "repository": "github:nertzy/pi-cohort-mux"

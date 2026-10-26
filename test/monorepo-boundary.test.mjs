@@ -50,7 +50,28 @@ test("adapter reload factory is a public package export", async () => {
   const module = await import("pi-cohort-mux-cmux/execution-backend");
   assert.equal(typeof module.createCmuxExecutionBackend, "function");
   assert.equal(module.createCmuxExecutionBackend().name, "cmux");
+  await assertReloadNamesItself(
+    "pi-cohort-mux-cmux",
+    module,
+    module.createCmuxExecutionBackend(),
+  );
 });
+
+// A backend carries the descriptor pi-cohort uses to recreate it in another
+// process; it must name its own package, public subpath, and factory.
+async function assertReloadNamesItself(packageName, module, backend) {
+  const { reload } = backend;
+  assert.equal(reload.protocolVersion, 1);
+  const manifest = JSON.parse(await readFile(new URL(reload.packageJsonUrl)));
+  assert.equal(manifest.name, packageName);
+  assert.equal(reload.publicSubpath, "./execution-backend");
+  assert.equal(
+    await import(`${packageName}/execution-backend`),
+    module,
+    "the descriptor's subpath is the module that built the backend",
+  );
+  assert.equal(module[reload.factoryExport]().name, backend.name);
+}
 
 test("packed adapter alone installs core transitively and activates through Pi", {
   skip: piLoader.skipReason ?? false,

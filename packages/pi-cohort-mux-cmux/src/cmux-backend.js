@@ -402,6 +402,15 @@ function translateCmuxEvent(frame, surface) {
 
 // ─── Public factory ───────────────────────────────────────────────────────────
 
+// How pi-cohort recreates this backend in another process: this package's
+// public ./execution-backend subpath and the factory below.
+const RELOAD = Object.freeze({
+  protocolVersion: 1,
+  packageJsonUrl: new URL("../package.json", import.meta.url).href,
+  publicSubpath: "./execution-backend",
+  factoryExport: "createCmuxExecutionBackend",
+});
+
 /**
  * Create a cmux execution backend.
  *
@@ -699,6 +708,7 @@ export function createCmuxExecutionBackend({
   return {
     name: "cmux",
     protocolVersion: 1,
+    reload: RELOAD,
     surfaceEnvironmentPrefixes: [SURFACE_ENVIRONMENT_PREFIX],
     state,
 
