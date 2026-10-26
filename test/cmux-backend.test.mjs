@@ -677,6 +677,14 @@ test("launch: collapsed helper pane is recreated instead of failing", async () =
   await second.release();
 });
 
+test("declares CMUX_* as surface-owned so attempts keep the pane's identity", () => {
+  const { execFile, spawn } = makeFakeIo();
+  assert.deepEqual(
+    createCmuxBackend({ execFile, spawn }).surfaceEnvironmentPrefixes,
+    ["CMUX_"],
+  );
+});
+
 test("launch: inherited CMUX_* identity is scrubbed from the child environment", async () => {
   const { execFile, spawn, fifoPayloads } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });

@@ -150,10 +150,12 @@ async function resolveExecutable(name) {
  * surface, pane, and socket identity from cmux; forwarding the parent's values
  * through the env pipe would overwrite them and misroute child automation.
  */
+const SURFACE_ENVIRONMENT_PREFIX = "CMUX_";
+
 function scrubMuxEnvironment(environment) {
   const scrubbed = {};
   for (const [key, value] of Object.entries(environment ?? {})) {
-    if (key.startsWith("CMUX_")) continue;
+    if (key.startsWith(SURFACE_ENVIRONMENT_PREFIX)) continue;
     scrubbed[key] = value;
   }
   return scrubbed;
@@ -697,6 +699,7 @@ export function createCmuxExecutionBackend({
   return {
     name: "cmux",
     protocolVersion: 1,
+    surfaceEnvironmentPrefixes: [SURFACE_ENVIRONMENT_PREFIX],
     state,
 
     // ── detect ─────────────────────────────────────────────────────────────
