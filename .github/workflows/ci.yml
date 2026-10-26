@@ -15,6 +15,7 @@ concurrency:
 env:
   PI_VERSION: 1.3.0
   CMUX_VERSION: 0.65.2
+  HERDR_VERSION: 0.9.5
 
 jobs:
   lint:
@@ -62,6 +63,35 @@ jobs:
       - run: npm install --global "@earendil-works/pi-coding-agent@$PI_VERSION"
       - run: sudo apt-get install --yes --no-install-recommends tmux
       - run: npm test
+
+  herdr:
+    name: Linux · real herdr
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.x
+          cache: npm
+      - run: npm ci
+      - name: Install herdr
+        run: |
+          mkdir -p "$RUNNER_TEMP/herdr"
+          curl -fsSLo "$RUNNER_TEMP/herdr/herdr" "https://github.com/herdrdev/herdr/releases/download/v$HERDR_VERSION/herdr-linux-x86_64"
+          chmod +x "$RUNNER_TEMP/herdr/herdr"
+          echo "$RUNNER_TEMP/herdr" >> "$GITHUB_PATH"
+      - run: herdr --version
+      - name: Test against real herdr
+        shell: bash
+        env:
+          PI_COHORT_MUX_PRODUCTION_HERDR_SMOKE: "1"
+        run: |
+          # Each test starts its own herdr server under a temporary XDG_CONFIG_HOME.
+          node --test --test-concurrency=1 test/production-herdr-smoke.test.mjs | tee "$RUNNER_TEMP/herdr-tests.log"
+          # A missing prerequisite skips rather than fails; treat it as a failure here.
+          grep -q '^ℹ skipped 0$' "$RUNNER_TEMP/herdr-tests.log"
 
   cmux:
     name: macOS · real cmux
