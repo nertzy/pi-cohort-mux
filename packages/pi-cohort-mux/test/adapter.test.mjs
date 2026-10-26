@@ -5,9 +5,14 @@ import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url);
 const { installMuxAdapter } = await jiti.import("pi-cohort-mux/adapter");
-const { selectExecutionBackend } = await jiti.import(
-  "pi-cohort/execution-backend",
+const { selectExecutionBackend, EXECUTION_BACKEND_PROTOCOL_VERSION } =
+  await jiti.import("pi-cohort/execution-backend");
+const { default: installFakeAdapter } = await jiti.import(
+  "./fixtures/fake-adapter/src/index.js",
 );
+
+const fixture = (path) => new URL(`fixtures/${path}`, import.meta.url);
+const hub = () => globalThis[Symbol.for("pi-cohort.execution-backends.v1")];
 
 const ACCENT = (text) => `<${text}>`;
 const theme = { fg: (_token, text) => ACCENT(text), bold: (text) => text };
@@ -50,9 +55,9 @@ function badgeFrom(resolver, backend) {
   return call.render(80)[0].trimEnd();
 }
 
-test("installs the backend and badges subagent calls with the backend's own name", async () => {
+test("installs an adapter from its own module URL and badges calls with the backend's name", async () => {
   const pi = fakePi();
-  const dispose = installMuxAdapter(pi, fakeBackend("fakemux"));
+  const dispose = installFakeAdapter(pi);
   try {
     const { selection } = await selectExecutionBackend("fakemux");
     assert.equal(selection.backend.name, "fakemux");
@@ -71,27 +76,51 @@ test("installs the backend and badges subagent calls with the backend's own name
   );
 });
 
-test("registers the backend when the host has no tool renderers", async () => {
-  const dispose = installMuxAdapter(undefined, fakeBackend("bare"));
+test("derives pi-cohort's reload descriptor from the adapter's package by convention", () => {
+  const dispose = installFakeAdapter(fakePi());
   try {
-    const { selection } = await selectExecutionBackend("bare");
-    assert.equal(selection.backend.name, "bare");
+    assert.deepEqual(hub().reloadDescriptors.get("fakemux"), {
+      protocolVersion: EXECUTION_BACKEND_PROTOCOL_VERSION,
+      packageJsonUrl: fixture("fake-adapter/package.json").href,
+      publicSubpath: "./execution-backend",
+      factoryExport: "default",
+    });
   } finally {
     dispose();
   }
 });
 
-test("passes the backend's own reload descriptor to pi-cohort and badges only an accepted backend", () => {
+test("registers the backend when the host has no tool renderers", async () => {
+  const dispose = installFakeAdapter(undefined);
+  try {
+    const { selection } = await selectExecutionBackend("fakemux");
+    assert.equal(selection.backend.name, "fakemux");
+  } finally {
+    dispose();
+  }
+});
+
+test("rejects a package without an ./execution-backend export and adds no badge", () => {
   const pi = fakePi();
-  const backend = {
-    ...fakeBackend("reloadable"),
-    reload: {
-      protocolVersion: 99,
-      packageJsonUrl: new URL("../package.json", import.meta.url).href,
-      publicSubpath: "./execution-backend",
-      factoryExport: "createFakeExecutionBackend",
-    },
-  };
-  assert.throws(() => installMuxAdapter(pi, backend), /reload/i);
+  assert.throws(
+    () =>
+      installMuxAdapter(
+        pi,
+        fixture("no-backend-export/src/index.js").href,
+        () => fakeBackend("noexport"),
+      ),
+    /export_not_public/,
+  );
   assert.equal(pi.resolvers.length, 0, "no badge for a rejected backend");
+  assert.equal(hub().backends.has("noexport"), false);
+});
+
+test("rejects a module URL with no package.json above it", () => {
+  assert.throws(
+    () =>
+      installMuxAdapter(fakePi(), "file:///nonexistent/src/index.js", () =>
+        fakeBackend("orphan"),
+      ),
+    /no package\.json above file:\/\/\/nonexistent\/src\/index\.js/,
+  );
 });

@@ -186,15 +186,6 @@ function translateHerdrEvent({ event, data }, surface, closing) {
 
 // ─── Public factory ───────────────────────────────────────────────────────────
 
-// How pi-cohort recreates this backend in another process: this package's
-// public ./execution-backend subpath and the factory below.
-const RELOAD = Object.freeze({
-  protocolVersion: 1,
-  packageJsonUrl: new URL("../package.json", import.meta.url).href,
-  publicSubpath: "./execution-backend",
-  factoryExport: "createHerdrExecutionBackend",
-});
-
 /**
  * Create a herdr execution backend.
  *
@@ -543,7 +534,6 @@ export function createHerdrExecutionBackend({
 
   return {
     name: "herdr",
-    reload: RELOAD,
     protocolVersion: 1,
     surfaceEnvironmentPrefixes: [SURFACE_ENVIRONMENT_PREFIX],
     placement,
@@ -743,3 +733,6 @@ export function createHerdrExecutionBackend({
 }
 
 export { createHerdrExecutionBackend as createHerdrBackend };
+
+// The adapter convention: "./execution-backend" default-exports the factory.
+export default createHerdrExecutionBackend;

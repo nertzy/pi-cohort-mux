@@ -7,5 +7,5 @@ export {
 } from "./cmux-backend.js";
 
 export default function installPiCohortMux(pi) {
-  return installMuxAdapter(pi, createCmuxExecutionBackend());
+  return installMuxAdapter(pi, import.meta.url, createCmuxExecutionBackend);
 }

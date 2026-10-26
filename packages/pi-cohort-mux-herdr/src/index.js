@@ -8,5 +8,5 @@ export {
 } from "./herdr-backend.js";
 
 export default function installPiCohortMuxHerdr(pi) {
-  return installMuxAdapter(pi, createHerdrExecutionBackend());
+  return installMuxAdapter(pi, import.meta.url, createHerdrExecutionBackend);
 }

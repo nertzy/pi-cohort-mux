@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { piModule, resolvePi } from "./support/pi-runtime.mjs";
@@ -57,37 +58,22 @@ test("root is a private workspace and only the adapters activate in Pi", () => {
   }
 });
 
-test("adapter reload factories are public package exports", async () => {
+test("each adapter default-exports its backend factory from ./execution-backend", async () => {
   const cmux = await import("pi-cohort-mux-cmux/execution-backend");
-  assert.equal(cmux.createCmuxExecutionBackend().name, "cmux");
-  await assertReloadNamesItself(
-    "pi-cohort-mux-cmux",
-    cmux,
-    cmux.createCmuxExecutionBackend(),
-  );
+  assertConventionalFactory(cmux, cmux.createCmuxExecutionBackend, "cmux");
   const herdr = await import("pi-cohort-mux-herdr/execution-backend");
-  assert.equal(herdr.createHerdrExecutionBackend().name, "herdr");
-  await assertReloadNamesItself(
-    "pi-cohort-mux-herdr",
-    herdr,
-    herdr.createHerdrExecutionBackend(),
-  );
+  assertConventionalFactory(herdr, herdr.createHerdrExecutionBackend, "herdr");
 });
 
-// A backend carries the descriptor pi-cohort uses to recreate it in another
-// process; it must name its own package, public subpath, and factory.
-async function assertReloadNamesItself(packageName, module, backend) {
-  const { reload } = backend;
-  assert.equal(reload.protocolVersion, 1);
-  const manifest = JSON.parse(await readFile(new URL(reload.packageJsonUrl)));
-  assert.equal(manifest.name, packageName);
-  assert.equal(reload.publicSubpath, "./execution-backend");
-  assert.equal(
-    await import(`${packageName}/execution-backend`),
-    module,
-    "the descriptor's subpath is the module that built the backend",
-  );
-  assert.equal(module[reload.factoryExport]().name, backend.name);
+// pi-cohort-mux/adapter rebuilds a backend in another process from the
+// package's "./execution-backend" default export, so that export must be the
+// factory the entry point installs, and the backend carries no registration
+// details of its own.
+function assertConventionalFactory(module, namedFactory, name) {
+  assert.equal(module.default, namedFactory);
+  const backend = module.default();
+  assert.equal(backend.name, name);
+  assert.equal(Object.hasOwn(backend, "reload"), false);
 }
 
 for (const { backend, directory: adapterDirectory, manifest } of adapters)
@@ -188,12 +174,17 @@ async function packedAdapterActivates(backend, adapterDirectory, adapter) {
     assert.equal(loaded.extensions.length, 1);
     const hub = globalThis[Symbol.for("pi-cohort.execution-backends.v1")];
     assert.equal(hub.backends.get(backend)?.name, backend);
-    assert.deepEqual(Object.keys(hub.reloadDescriptors.get(backend)).sort(), [
-      "factoryExport",
-      "packageJsonUrl",
-      "protocolVersion",
-      "publicSubpath",
-    ]);
+    const reload = hub.reloadDescriptors.get(backend);
+    assert.equal(reload.factoryExport, "default");
+    assert.equal(reload.publicSubpath, "./execution-backend");
+    assert.equal(
+      reload.packageJsonUrl,
+      pathToFileURL(
+        await realpath(
+          join(directory, `node_modules/${adapter.name}/package.json`),
+        ),
+      ).href,
+    );
   } finally {
     if (registry) await new Promise((resolve) => registry.close(resolve));
     await rm(directory, { recursive: true, force: true });

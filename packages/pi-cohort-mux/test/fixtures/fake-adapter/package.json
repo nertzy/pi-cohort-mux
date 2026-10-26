@@ -1,0 +1,8 @@
+{
+  "name": "fake-mux-adapter",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./execution-backend": "./src/execution-backend.js"
+  }
+}

@@ -20,10 +20,16 @@ orchestration, control, reporting, and detached reload.
 
 In Pi's transcript, an adapter adds an accent badge, `[cmux]` or `[herdr]`, to a
 `subagent` call that ran on its backend. The call's frame keeps Pi's usual
-pending, success, and error colors. An adapter's Pi extension is one call to
-`installMuxAdapter(pi, backend)` from `pi-cohort-mux/adapter`, which registers
-the backend with `pi-cohort`, using the `reload` descriptor the backend carries,
-and names the badge after the backend's `name`.
+pending, success, and error colors.
+
+An adapter follows one convention: its package exports `./execution-backend`,
+whose default export is a zero-argument backend factory. Its Pi extension is
+one call, `installMuxAdapter(pi, import.meta.url, createBackend)` from
+`pi-cohort-mux/adapter`, with that same factory. Core finds the adapter's
+package from `import.meta.url`, registers the backend with `pi-cohort` (including
+the descriptor `pi-cohort` uses to rebuild it in another process), and names
+the badge after the backend's `name`. Adapters carry no `pi-cohort`
+registration details of their own.
 
 With `pi-cohort`'s default `auto` backend selection, the first registered
 adapter that detects its mux wins. Set `pi-cohort`'s `executionBackend` to
