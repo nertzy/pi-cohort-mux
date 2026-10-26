@@ -20,7 +20,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
     "jiti": "^2.7.0",
-    "markdownlint-cli2": "^0.23.3",
+    "markdownlint-cli2": "^0.24.0",
     "pi-cohort": "7.4.1"
   }
 }
