@@ -15,7 +15,8 @@
     "lint": "npm run lint:biome && npm run lint:markdown && actionlint .github/workflows/*.yml",
     "lint:biome": "biome check --error-on-warnings .",
     "lint:markdown": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#tmp\" \"#.worktrees\"",
-    "lint:fix": "biome check --write . && markdownlint-cli2 --fix \"**/*.md\" \"#node_modules\" \"#tmp\" \"#.worktrees\""
+    "lint:fix": "biome check --write . && markdownlint-cli2 --fix \"**/*.md\" \"#node_modules\" \"#tmp\" \"#.worktrees\"",
+    "pack:check": "node scripts/check-package-contents.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
