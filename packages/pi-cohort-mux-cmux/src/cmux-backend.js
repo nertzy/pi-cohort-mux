@@ -34,7 +34,7 @@
  * pipe (FIFO). The bootstrap script (env-bootstrap.sh) runs inside the pane,
  * opens the FIFO itself, sets the env vars, then exec()s the real command.
  * Environment values never appear in argv, a regular file, or logs. The FIFO
- * path (not its contents) appears in the --command string — this is not a
+ * path (not its contents) appears in the owner-only launch file — this is not a
  * secret. request.secretPipePath has no defined child-side mapping in the v1
  * SPI transport, so launch rejects it instead of silently dropping it — loud
  * rejection is safer than undefined behavior.
@@ -44,7 +44,7 @@ import {
   spawn as spawnProcess,
 } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, readFile, rm } from "node:fs/promises";
+import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -67,6 +67,7 @@ const BOOTSTRAP_PATH = environmentBootstrapPath;
 const LAUNCHER_PATH = fileURLToPath(
   new URL("./surface-launch.sh", import.meta.url),
 );
+const LAUNCH_FILE = "launch.sh";
 
 // ─── Shell-safe command building ──────────────────────────────────────────────
 
@@ -76,7 +77,7 @@ function quoteShell(token) {
 }
 
 /**
- * Build the shell command string passed to cmux --command.
+ * Build the shell command string cmux runs as a surface's initial command.
  * Only command + args are included; environment and secretPipePath are
  * intentionally excluded (see security note above).
  */
@@ -124,8 +125,8 @@ function createOutcomeUnknown(error) {
 
 /**
  * Resolve a bare CLI name against this process's PATH. The child surface runs
- * under the user's login shell, whose PATH need not reach cmux (a CI runner's
- * bash does not), and a late surface must be able to close itself.
+ * with the cmux app's environment, whose PATH need not reach the CLI, and a
+ * late surface must be able to close itself.
  */
 async function resolveExecutable(name) {
   if (name.includes("/")) return name;
@@ -163,23 +164,30 @@ function scrubMuxEnvironment(environment) {
 
 // ─── Surface ref parsing ─────────────────────────────────────────────────────
 
-/** Parse "OK surface:N pane:M workspace:K" from new-pane/new-surface stdout. */
+/** Parse the refs from `cmux rpc pane.create|surface.create`'s JSON result. */
 function parseCreateRefs(output) {
-  const text = output.trim();
-  const surface = text.match(/(?:^|\s)(surface:\d+)(?:\s|$)/);
-  const pane = text.match(/(?:^|\s)(pane:\d+)(?:\s|$)/);
-  const workspace = text.match(/(?:^|\s)(workspace:\d+)(?:\s|$)/);
-  if (!surface || !workspace) {
+  let result;
+  try {
+    result = JSON.parse(output);
+  } catch {
+    result = undefined;
+  }
+  const ref = (key, kind) =>
+    typeof result?.[key] === "string" &&
+    new RegExp(`^${kind}:\\d+$`).test(result[key])
+      ? result[key]
+      : null;
+  const surfaceRef = ref("surface_ref", "surface");
+  const workspaceRef = ref("workspace_ref", "workspace");
+  if (!surfaceRef || !workspaceRef) {
     throw Object.assign(
-      new Error(`Unexpected cmux create output: ${JSON.stringify(text)}`),
+      new Error(
+        `Unexpected cmux create output: ${JSON.stringify(output.trim())}`,
+      ),
       { unexpectedCreateOutput: true },
     );
   }
-  return {
-    surfaceRef: surface[1],
-    paneRef: pane?.[1] ?? null,
-    workspaceRef: workspace[1],
-  };
+  return { surfaceRef, paneRef: ref("pane_ref", "pane"), workspaceRef };
 }
 
 // ─── Owned-surface close ─────────────────────────────────────────────────────
@@ -508,33 +516,23 @@ export function createCmuxExecutionBackend({
         state.helperPane = null;
       }
     }
-    const createArgs = helper
-      ? [
-          "new-surface",
-          "--workspace",
-          parentWorkspace,
-          "--pane",
-          helper.ref,
-          "--type",
-          "terminal",
-          "--focus",
-          "false",
-          "--command",
-          command,
-        ]
-      : [
-          "new-pane",
-          "--workspace",
-          parentWorkspace,
-          "--type",
-          "terminal",
-          "--direction",
-          "right",
-          "--focus",
-          "false",
-          "--command",
-          command,
-        ];
+    // The CLI's new-pane/new-surface --command types its text into whatever
+    // shell the surface starts (initial_input); the raw v2 methods take
+    // initial_command, which cmux runs as the surface's own process.
+    const params = {
+      workspace_id: parentWorkspace,
+      type: "terminal",
+      focus: false,
+      initial_command: command,
+    };
+    const [method, placement] = helper
+      ? ["surface.create", { pane_id: helper.ref }]
+      : ["pane.create", { direction: "right" }];
+    const createArgs = [
+      "rpc",
+      method,
+      JSON.stringify({ ...params, ...placement }),
+    ];
     const result = await execFileFn(cli, createArgs, {
       timeout: cliDeadlineMs,
       signal,
@@ -800,21 +798,39 @@ export function createCmuxExecutionBackend({
         throw error;
       }
 
-      // cmux types --command into the user's login shell, so it only starts
-      // /bin/sh; surface-launch.sh reports the surface's own id, refuses an
-      // abandoned launch, enters the cwd (new-pane has no working-directory
-      // flag), and execs env-bootstrap.sh, which reads the environment from
-      // the FIFO. The FIFO path, never its contents, appears in the command.
-      const command = buildCommand("/bin/sh", [
-        LAUNCHER_PATH,
-        environmentPipe.directory,
-        environmentPipe.pipePath,
-        await resolveExecutable(cli),
-        request.cwd,
-        BOOTSTRAP_PATH,
-        request.command,
-        ...request.args,
-      ]);
+      // cmux runs the initial command as the surface's own process, so no
+      // shell starts and nothing is typed. cmux holds a surface open after
+      // that command exits, so surface-launch.sh closes its own surface when
+      // the child exits, as herdr removes a pane: a crashed child leaves no
+      // tab behind, and pi-cohort reports the failure to the parent. The
+      // command names only fixed paths, since cmux keeps it in its surface
+      // records; the request itself (cwd, command, args) goes in an
+      // owner-only launch file beside the FIFO, quoted for /bin/sh.
+      // surface-launch.sh reports the surface's own id, refuses an abandoned
+      // launch, enters the cwd, and runs env-bootstrap.sh, which reads the
+      // environment from the FIFO. Neither the command nor the file carries
+      // an environment value.
+      let command;
+      try {
+        command = buildCommand(LAUNCHER_PATH, [
+          environmentPipe.directory,
+          await resolveExecutable(cli),
+        ]);
+        await writeFile(
+          join(environmentPipe.directory, LAUNCH_FILE),
+          `set -- ${buildCommand(environmentPipe.pipePath, [
+            request.cwd,
+            BOOTSTRAP_PATH,
+            request.command,
+            ...request.args,
+          ])}\n`,
+          { mode: 0o600, flag: "wx" },
+        );
+      } catch (error) {
+        await environmentPipe.cleanup();
+        await subscription.stop();
+        throw error;
+      }
 
       let createRefs;
       try {
@@ -843,15 +859,23 @@ export function createCmuxExecutionBackend({
           await environmentPipe?.cleanup();
         }
         // Snapshot for UUID correlation (spike: three-way UUID correlation).
-        snapshot = await snapshotOf(parentWorkspace, createRefs.paneRef);
+        // The child has its environment by now, and its surface closes
+        // with it, so a child that dies at once takes its surface (and a
+        // last-surface helper pane) with it before this snapshot.
+        const closedEarly = (cause) =>
+          new Error(
+            `surface ${createRefs.surfaceRef} closed right after the child started (the child exited, or something else closed it)`,
+            { cause },
+          );
+        try {
+          snapshot = await snapshotOf(parentWorkspace, createRefs.paneRef);
+        } catch (error) {
+          throw isNotFound(error) ? closedEarly(error) : error;
+        }
         snapshotSurface = snapshot.surfaces?.find(
           (s) => s.ref === createRefs.surfaceRef,
         );
-        if (!snapshotSurface) {
-          throw new Error(
-            `created surface ${createRefs.surfaceRef} not present in pane snapshot`,
-          );
-        }
+        if (!snapshotSurface) throw closedEarly();
       } catch (error) {
         const reported = await rollbackSurface(createRefs, error);
         await subscription.stop();

@@ -26,7 +26,14 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -453,6 +460,133 @@ test("production cmux backend: launch → evidence → release-retains → reatt
       cleanupErrors,
       "Production cmux smoke cleanup failed",
     );
+  }
+});
+
+test("production cmux backend: a child that exits takes its surface with it", {
+  skip: skipReason || false,
+}, async () => {
+  const backend = createCmuxBackend(BACKEND_DEADLINES);
+  const tempDir = await mkdtemp(join(tmpdir(), "pi-cohort-mux-smoke-"));
+  const crash = join(tempDir, "crash");
+  let lease;
+  let ownedSurface;
+  try {
+    // A crash after startup: the child exits non-zero once the test, holding
+    // the lease, tells it to.
+    lease = await backend.launch({
+      command: "/bin/sh",
+      args: [
+        "-c",
+        'while [ ! -e "$1" ]; do sleep 0.1; done; exit 3',
+        "crash",
+        crash,
+      ],
+      cwd: tempDir,
+      environment: {},
+      runId: "smoke-run-exit",
+      childId: "smoke-child-exit",
+      signal: new AbortController().signal,
+    });
+    const { handle } = lease;
+    ownedSurface = {
+      workspaceRef: handle.data.workspaceRef,
+      paneRef: handle.data.paneRef,
+      surfaceRef: handle.data.surfaceRef,
+      surfaceId: handle.surface.id,
+    };
+    await writeFile(crash, "");
+
+    const fact = await Promise.race([
+      lease.events.next().then(({ value }) => value),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("no surface_closed fact")),
+          DISAPPEARANCE_DEADLINE_MS,
+        ).unref(),
+      ),
+    ]);
+    assert.equal(fact.type, "surface_closed");
+    assert.equal(fact.requested, false, "nobody asked cmux to close it");
+    assert.equal(
+      await verifyGone(ownedSurface),
+      true,
+      "the launcher closed its surface when the child exited",
+    );
+    ownedSurface = undefined;
+  } finally {
+    await lease?.release();
+    if (ownedSurface) await backend.close({ ...lease.handle }, "cleanup");
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("production cmux backend: any cwd and args reach the child exactly, however long or backslashed", {
+  skip: skipReason || false,
+}, async () => {
+  // The request travels in the launch file, quoted for /bin/sh, whatever its
+  // length or characters.
+  const backend = createCmuxBackend(BACKEND_DEADLINES);
+  const tempDir = await mkdtemp(join(tmpdir(), "pi-cohort-mux-smoke-"));
+  const cwd = join(
+    tempDir,
+    "back\\slash 'q'",
+    "d".repeat(200),
+    "e".repeat(200),
+  );
+  const evidence = join(tempDir, "argv.json");
+  const done = join(tempDir, "done");
+  const args = [
+    "a\\\\b",
+    "C:\\",
+    "it's",
+    "line\nbreak",
+    "$HOME `id` ;|&",
+    "x".repeat(3000),
+  ];
+  let lease;
+  let ownedSurface;
+  try {
+    await mkdir(cwd, { recursive: true });
+    lease = await backend.launch({
+      command: process.execPath,
+      args: [
+        "-e",
+        // Report, then exit once the test, holding the lease, says so.
+        'const fs = require("node:fs"); fs.writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(3) })); setInterval(() => fs.existsSync(process.argv[2]) && process.exit(0), 100)',
+        evidence,
+        done,
+        ...args,
+      ],
+      cwd,
+      environment: {},
+      runId: "smoke-run-argv",
+      childId: "smoke-child-argv",
+      signal: new AbortController().signal,
+    });
+    const { handle } = lease;
+    ownedSurface = {
+      workspaceRef: handle.data.workspaceRef,
+      paneRef: handle.data.paneRef,
+      surfaceRef: handle.data.surfaceRef,
+      surfaceId: handle.surface.id,
+    };
+
+    await pollForFile(evidence);
+    const ran = JSON.parse(await readFile(evidence, "utf8"));
+    assert.equal(ran.cwd, await realpath(cwd));
+    assert.deepEqual(ran.args, args);
+    await writeFile(done, "");
+    assert.equal(
+      await verifyGone(ownedSurface),
+      true,
+      "the surface closed when the child exited",
+    );
+    ownedSurface = undefined;
+  } finally {
+    await lease?.release();
+    if (ownedSurface) await backend.close({ ...lease.handle }, "cleanup");
+    await rm(tempDir, { recursive: true, force: true });
   }
 });
 
