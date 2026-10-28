@@ -456,6 +456,64 @@ test("production cmux backend: launch → evidence → release-retains → reatt
   }
 });
 
+test("production cmux backend: a child that exits takes its surface with it", {
+  skip: skipReason || false,
+}, async () => {
+  const backend = createCmuxBackend(BACKEND_DEADLINES);
+  const tempDir = await mkdtemp(join(tmpdir(), "pi-cohort-mux-smoke-"));
+  const crash = join(tempDir, "crash");
+  let lease;
+  let ownedSurface;
+  try {
+    // A crash after startup: the child exits non-zero once the test, holding
+    // the lease, tells it to.
+    lease = await backend.launch({
+      command: "/bin/sh",
+      args: [
+        "-c",
+        'while [ ! -e "$1" ]; do sleep 0.1; done; exit 3',
+        "crash",
+        crash,
+      ],
+      cwd: tempDir,
+      environment: {},
+      runId: "smoke-run-exit",
+      childId: "smoke-child-exit",
+      signal: new AbortController().signal,
+    });
+    const { handle } = lease;
+    ownedSurface = {
+      workspaceRef: handle.data.workspaceRef,
+      paneRef: handle.data.paneRef,
+      surfaceRef: handle.data.surfaceRef,
+      surfaceId: handle.surface.id,
+    };
+    await writeFile(crash, "");
+
+    const fact = await Promise.race([
+      lease.events.next().then(({ value }) => value),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("no surface_closed fact")),
+          DISAPPEARANCE_DEADLINE_MS,
+        ).unref(),
+      ),
+    ]);
+    assert.equal(fact.type, "surface_closed");
+    assert.equal(fact.requested, false, "nobody asked cmux to close it");
+    assert.equal(
+      await verifyGone(ownedSurface),
+      true,
+      "the login shell exited with the child, so cmux closed the surface",
+    );
+    ownedSurface = undefined;
+  } finally {
+    await lease?.release();
+    if (ownedSurface) await backend.close({ ...lease.handle }, "cleanup");
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 // ─── Probe diagnostic (always included, low overhead) ────────────────────────
 
 test("production cmux smoke: probe diagnostic — opt-in guard and availability", () => {

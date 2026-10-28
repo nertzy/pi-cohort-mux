@@ -506,6 +506,23 @@ test("launch: child command starts in the request cwd", async () => {
   await lease.release();
 });
 
+test("launch: the login shell exits with the child, so cmux closes the surface like herdr removes a pane", async () => {
+  const { execFile, spawn, calls } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  const lease = await backend.launch(makeRequest());
+
+  const createCall = calls.find(
+    (c) => c.type === "exec" && c.args[0] === "new-pane",
+  );
+  const command = createCall.args[createCall.args.indexOf("--command") + 1];
+  assert.match(
+    command,
+    /^'\/bin\/sh' .*; exit$/,
+    "the launcher is not exec'd (the shell absorbs its own signals) and the shell exits after it",
+  );
+  await lease.release();
+});
+
 test("launch: the launcher gets the CLI's absolute path, not the login shell's PATH", async (t) => {
   const bin = await mkdtemp(join(tmpdir(), "pi-cohort-mux-bin-"));
   t.after(() => rm(bin, { recursive: true, force: true }));
@@ -1126,8 +1143,25 @@ test("launch: created surface missing from the snapshot is closed, not just unob
 
   await assert.rejects(
     backend.launch(makeRequest()),
-    /not present in pane snapshot/,
+    /surface:100 closed right after the child started/,
   );
+  assertRolledBack(calls, children);
+});
+
+test("launch: a child that exits before the snapshot is reported as gone, not as a cmux error", async () => {
+  const { execFile, spawn, calls, children } = makeFakeIo({
+    snapshotNotFound: true,
+  });
+  const backend = createCmuxBackend({ execFile, spawn });
+
+  await assert.rejects(backend.launch(makeRequest()), (error) => {
+    assert.match(
+      error.message,
+      /surface:100 closed right after the child started \(the child exited, or something else closed it\)/,
+    );
+    assert.match(error.cause.stderr, /not_found/);
+    return true;
+  });
   assertRolledBack(calls, children);
 });
 

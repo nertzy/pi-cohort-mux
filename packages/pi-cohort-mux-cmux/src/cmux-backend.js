@@ -805,7 +805,12 @@ export function createCmuxExecutionBackend({
       // abandoned launch, enters the cwd (new-pane has no working-directory
       // flag), and execs env-bootstrap.sh, which reads the environment from
       // the FIFO. The FIFO path, never its contents, appears in the command.
-      const command = buildCommand("/bin/sh", [
+      // The shell is not exec'd away (it absorbs signals sent to its own pid,
+      // such as a prompt plugin's SIGUSR1) but exits right after the launcher,
+      // so cmux closes the surface when the child exits, as herdr removes a
+      // pane. A crashed child leaves no idle shell behind; pi-cohort reports
+      // the failure to the parent.
+      const command = `${buildCommand("/bin/sh", [
         LAUNCHER_PATH,
         environmentPipe.directory,
         environmentPipe.pipePath,
@@ -814,7 +819,7 @@ export function createCmuxExecutionBackend({
         BOOTSTRAP_PATH,
         request.command,
         ...request.args,
-      ]);
+      ])}; exit`;
 
       let createRefs;
       try {
@@ -843,15 +848,23 @@ export function createCmuxExecutionBackend({
           await environmentPipe?.cleanup();
         }
         // Snapshot for UUID correlation (spike: three-way UUID correlation).
-        snapshot = await snapshotOf(parentWorkspace, createRefs.paneRef);
+        // The child has its environment by now, and the login shell exits
+        // with it, so a child that dies at once takes its surface (and a
+        // last-surface helper pane) with it before this snapshot.
+        const closedEarly = (cause) =>
+          new Error(
+            `surface ${createRefs.surfaceRef} closed right after the child started (the child exited, or something else closed it)`,
+            { cause },
+          );
+        try {
+          snapshot = await snapshotOf(parentWorkspace, createRefs.paneRef);
+        } catch (error) {
+          throw isNotFound(error) ? closedEarly(error) : error;
+        }
         snapshotSurface = snapshot.surfaces?.find(
           (s) => s.ref === createRefs.surfaceRef,
         );
-        if (!snapshotSurface) {
-          throw new Error(
-            `created surface ${createRefs.surfaceRef} not present in pane snapshot`,
-          );
-        }
+        if (!snapshotSurface) throw closedEarly();
       } catch (error) {
         const reported = await rollbackSurface(createRefs, error);
         await subscription.stop();

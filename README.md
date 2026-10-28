@@ -36,6 +36,14 @@ adapter that detects its mux wins. Set `pi-cohort`'s `executionBackend` to
 `cmux` or `herdr` to choose one, for example when herdr runs inside a cmux
 terminal and both detect.
 
+## cmux placement
+
+Inside a cmux terminal, children open as background tabs in a helper pane of
+the caller's workspace. cmux types the launch command into the tab's login
+shell, which exits with the child, so cmux closes a child's tab when the child
+exits, crashed or not. `pi-cohort` reports a failed child to its parent with
+the child's session file.
+
 ## herdr placement
 
 Inside a herdr pane, children appear according to
