@@ -17,14 +17,16 @@
  *   6. release() stops the subscription but does NOT close the surface.
  */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   access,
   chmod,
+  mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -32,6 +34,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test, { after, before } from "node:test";
 import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
+import { commandTokens, launchOf } from "./fixtures/cmux-launch.mjs";
 
 // ─── Fake child process for the events subscription ───────────────────────────
 
@@ -138,6 +141,7 @@ function makeFakeIo({
 } = {}) {
   const calls = [];
   const fifoPayloads = [];
+  const launchFiles = [];
   // Mutable across calls so a test can simulate the helper pane collapsing
   // between launches; a successful create makes the pane exist again.
   const behavior = {
@@ -172,14 +176,15 @@ function makeFakeIo({
       }
       await behavior.onCreate?.(args);
       if (behavior.createError) throw behavior.createError;
-      // The FIFO path is embedded in the --command string (bootstrap approach).
-      // Drain it so the background tee writer can complete.
-      const cmdIdx = args.indexOf("--command");
-      if (cmdIdx !== -1 && !behavior.fifoUnread) {
-        const fifoMatch = args[cmdIdx + 1].match(
-          /'([^']+\/environment\.fifo)'/,
-        );
-        if (fifoMatch) fifoPayloads.push(await readFile(fifoMatch[1], "utf8"));
+      // The launch file in the launch directory names the FIFO. Record what
+      // the launcher would source, then drain the FIFO so the background tee
+      // writer can complete.
+      if (args.includes("--command")) {
+        const launch = launchOf(args);
+        launch.mode = (await stat(launch.launchFile)).mode & 0o777;
+        launchFiles.push(launch);
+        if (!behavior.fifoUnread)
+          fifoPayloads.push(await readFile(launch.fifo, "utf8"));
       }
       behavior.paneGone = false;
       return {
@@ -233,16 +238,15 @@ function makeFakeIo({
     return child;
   }
 
-  return { execFile, spawn, calls, behavior, fifoPayloads, children };
-}
-
-/** The --command string of a create call, split back into its shell tokens. */
-function commandTokens(args) {
-  const command = args[args.indexOf("--command") + 1];
-  return execFileSync("/bin/sh", ["-c", `printf '%s\\0' ${command}`])
-    .toString()
-    .split("\0")
-    .slice(0, -1);
+  return {
+    execFile,
+    spawn,
+    calls,
+    behavior,
+    fifoPayloads,
+    launchFiles,
+    children,
+  };
 }
 
 const pathExists = (path) =>
@@ -472,38 +476,110 @@ test("launch: state tracks launch count and stores last request", async () => {
 // ─── launch: workspace create args ───────────────────────────────────────────
 
 test("launch: child command starts in the request cwd", async () => {
-  const { execFile, spawn, calls } = makeFakeIo();
+  const { execFile, spawn, launchFiles } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const request = makeRequest({ cwd: "/exact/cwd/test" });
   const lease = await backend.launch(request);
 
-  const createCall = calls.find(
-    (c) => c.type === "exec" && c.args[0] === "new-pane",
-  );
-  assert.ok(createCall, "new-pane call present");
-  const [sh, launcher, launchDir, fifo, cli, cwd, bootstrap, ...child] =
-    commandTokens(createCall.args);
+  const [launch] = launchFiles;
   assert.equal(
-    sh,
+    launch.sh,
     "/bin/sh",
     "the login shell only starts /bin/sh; the launcher does the rest",
   );
-  assert.match(launcher, /\/surface-launch\.sh$/);
-  assert.equal(fifo, join(launchDir, "environment.fifo"));
+  assert.match(launch.launcher, /\/surface-launch\.sh$/);
   assert.ok(
-    cli === "cmux" || cli.startsWith("/"),
+    launch.cli === "cmux" || launch.cli.startsWith("/"),
     "the surface can close itself with the same CLI",
   );
-  assert.equal(cwd, "/exact/cwd/test", "the launcher enters the request cwd");
-  assert.match(bootstrap, /\/env-bootstrap\.sh$/);
-  assert.deepEqual(child, ["pi", "--session", "session.jsonl"]);
+  assert.deepEqual(launch.extra, [], "nothing else is typed");
+  assert.equal(launch.fifo, join(launch.launchDir, "environment.fifo"));
   assert.equal(
-    await pathExists(launchDir),
+    launch.cwd,
+    "/exact/cwd/test",
+    "the launcher enters the request cwd",
+  );
+  assert.match(launch.bootstrap, /\/env-bootstrap\.sh$/);
+  assert.deepEqual(launch.child, ["pi", "--session", "session.jsonl"]);
+  assert.equal(launch.mode, 0o600, "the launch file is owner-only");
+  assert.equal(
+    await pathExists(launch.launchDir),
     false,
     "launch directory removed after the hand-off",
   );
 
   await lease.release();
+});
+
+test("launch: the typed line stays short and backslash-free whatever the cwd and args", async () => {
+  // cmux types the line into the login shell before it is ready: the tty
+  // drops input past 1023 bytes, and fish reads \\ and \' inside single
+  // quotes as escapes. Only fixed paths are typed; the request travels in the
+  // launch file, which /bin/sh sources.
+  const { execFile, spawn, calls, launchFiles } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn });
+  const cwd = `/deep/${"d".repeat(600)}/back\\slash`;
+  const args = ["a\\\\b", "C:\\", "it's", "line\nbreak", "x".repeat(3000)];
+  const lease = await backend.launch(makeRequest({ cwd, args }));
+
+  const createCall = calls.find(
+    (c) => c.type === "exec" && c.args[0] === "new-pane",
+  );
+  const command = createCall.args[createCall.args.indexOf("--command") + 1];
+  assert.ok(Buffer.byteLength(command) < 1024, "fits the tty's line limit");
+  assert.equal(command.includes("\\"), false, "fish has no escape to misread");
+  assert.equal(launchFiles[0].cwd, cwd);
+  assert.deepEqual(launchFiles[0].child, ["pi", ...args]);
+  await lease.release();
+});
+
+/** `root` extended with directory names to `length` bytes (or one more). */
+function pathOfLength(root, length) {
+  let path = root;
+  while (path.length < length)
+    path = join(
+      path,
+      "l".repeat(Math.max(1, Math.min(250, length - path.length - 1))),
+    );
+  return path;
+}
+
+test("launch: a typed line the login shell would mangle is refused before cmux is called", async (t) => {
+  const savedTmpdir = process.env.TMPDIR;
+  t.after(() => {
+    if (savedTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = savedTmpdir;
+  });
+  const root = await mkdtemp(join(tmpdir(), "pi-cohort-mux-typed-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  for (const [name, dir] of [
+    ["backslash", join(root, "back\\slash")],
+    // 960 bytes overflows the typed line with any launcher path, yet leaves
+    // room for the FIFO path inside it under macOS's 1024-byte PATH_MAX.
+    ["long", pathOfLength(root, 960)],
+  ]) {
+    await mkdir(dir, { recursive: true });
+    process.env.TMPDIR = dir;
+    const { execFile, spawn, calls } = makeFakeIo();
+    const backend = createCmuxBackend({ execFile, spawn });
+
+    await assert.rejects(
+      backend.launch(makeRequest()),
+      /login shell/,
+      `${name} launch directory`,
+    );
+    assert.equal(
+      calls.some((c) => c.args[0] === "new-pane"),
+      false,
+      `${name}: no surface created`,
+    );
+    assert.deepEqual(
+      (await readdir(dir)).filter((e) => e.startsWith("pi-cohort-mux-env-")),
+      [],
+      `${name}: launch directory removed`,
+    );
+  }
 });
 
 test("launch: the login shell exits with the child, so cmux closes the surface like herdr removes a pane", async () => {
@@ -533,16 +609,13 @@ test("launch: the launcher gets the CLI's absolute path, not the login shell's P
   t.after(() => {
     process.env.PATH = savedPath;
   });
-  const { execFile, spawn, calls } = makeFakeIo();
+  const { execFile, spawn, launchFiles } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
 
   const lease = await backend.launch(makeRequest());
 
-  const createCall = calls.find(
-    (c) => c.type === "exec" && c.args[0] === "new-pane",
-  );
   assert.equal(
-    commandTokens(createCall.args)[4],
+    launchFiles[0].cli,
     join(bin, "cmux"),
     "a late surface can reach cmux even if its login shell cannot",
   );
@@ -731,30 +804,21 @@ test("launch: inherited CMUX_* identity is scrubbed from the child environment",
   await lease.release();
 });
 
-test("launch: command arg shell-escapes command and args", async () => {
-  const { execFile, spawn, calls } = makeFakeIo();
+test("launch: the launch file shell-escapes command and args", async () => {
+  const { execFile, spawn, launchFiles } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const request = makeRequest({
     command: "/usr/bin/pi",
-    args: ["--session", "path with spaces/session.jsonl"],
+    args: ["--session", "path with spaces/session.jsonl", "it's $HOME"],
   });
   const lease = await backend.launch(request);
 
-  const createCall = calls.find(
-    (c) => c.type === "exec" && c.args[0] === "new-pane",
-  );
-  const cmdIdx = createCall.args.indexOf("--command");
-  assert.ok(cmdIdx >= 0, "--command present");
-  const cmd = createCall.args[cmdIdx + 1];
-  // Should be shell-quoted tokens joined with space
-  assert.ok(cmd.includes("/usr/bin/pi"), "command present in --command arg");
-  assert.ok(
-    cmd.includes("path with spaces"),
-    "path with spaces present (shell-quoted)",
-  );
-  assert.ok(cmd.includes("session.jsonl"), "session flag present");
-  // Single-quote escaping: ensure the space arg is quoted
-  assert.ok(cmd.includes("'") || cmd.includes('"'), "quoting applied");
+  assert.deepEqual(launchFiles[0].child, [
+    "/usr/bin/pi",
+    "--session",
+    "path with spaces/session.jsonl",
+    "it's $HOME",
+  ]);
 
   await lease.release();
 });
@@ -1203,7 +1267,7 @@ test("launch: rollback close failure is reported alongside the original error", 
 function lateSurface(io, surfaceId, delayMs = 30) {
   const seen = {};
   io.behavior.onCreate = (args) => {
-    const [, , launchDir, fifo] = commandTokens(args);
+    const { launchDir, fifo } = launchOf(args);
     seen.launchDir = launchDir;
     setTimeout(async () => {
       seen.fifoPresent = await pathExists(fifo);

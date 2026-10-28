@@ -26,7 +26,14 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -505,6 +512,75 @@ test("production cmux backend: a child that exits takes its surface with it", {
       await verifyGone(ownedSurface),
       true,
       "the login shell exited with the child, so cmux closed the surface",
+    );
+    ownedSurface = undefined;
+  } finally {
+    await lease?.release();
+    if (ownedSurface) await backend.close({ ...lease.handle }, "cleanup");
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("production cmux backend: any cwd and args reach the child exactly, however long or backslashed", {
+  skip: skipReason || false,
+}, async () => {
+  // The login shell would drop a typed line past 1023 bytes and fish would
+  // misread backslashes; the request travels in the launch file instead.
+  const backend = createCmuxBackend(BACKEND_DEADLINES);
+  const tempDir = await mkdtemp(join(tmpdir(), "pi-cohort-mux-smoke-"));
+  const cwd = join(
+    tempDir,
+    "back\\slash 'q'",
+    "d".repeat(200),
+    "e".repeat(200),
+  );
+  const evidence = join(tempDir, "argv.json");
+  const done = join(tempDir, "done");
+  const args = [
+    "a\\\\b",
+    "C:\\",
+    "it's",
+    "line\nbreak",
+    "$HOME `id` ;|&",
+    "x".repeat(3000),
+  ];
+  let lease;
+  let ownedSurface;
+  try {
+    await mkdir(cwd, { recursive: true });
+    lease = await backend.launch({
+      command: process.execPath,
+      args: [
+        "-e",
+        // Report, then exit once the test, holding the lease, says so.
+        'const fs = require("node:fs"); fs.writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(3) })); setInterval(() => fs.existsSync(process.argv[2]) && process.exit(0), 100)',
+        evidence,
+        done,
+        ...args,
+      ],
+      cwd,
+      environment: {},
+      runId: "smoke-run-argv",
+      childId: "smoke-child-argv",
+      signal: new AbortController().signal,
+    });
+    const { handle } = lease;
+    ownedSurface = {
+      workspaceRef: handle.data.workspaceRef,
+      paneRef: handle.data.paneRef,
+      surfaceRef: handle.data.surfaceRef,
+      surfaceId: handle.surface.id,
+    };
+
+    await pollForFile(evidence);
+    const ran = JSON.parse(await readFile(evidence, "utf8"));
+    assert.equal(ran.cwd, await realpath(cwd));
+    assert.deepEqual(ran.args, args);
+    await writeFile(done, "");
+    assert.equal(
+      await verifyGone(ownedSurface),
+      true,
+      "the surface closed when the child exited",
     );
     ownedSurface = undefined;
   } finally {

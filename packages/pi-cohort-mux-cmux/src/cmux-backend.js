@@ -44,7 +44,7 @@ import {
   spawn as spawnProcess,
 } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, readFile, rm } from "node:fs/promises";
+import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -67,6 +67,11 @@ const BOOTSTRAP_PATH = environmentBootstrapPath;
 const LAUNCHER_PATH = fileURLToPath(
   new URL("./surface-launch.sh", import.meta.url),
 );
+const LAUNCH_FILE = "launch.sh";
+// cmux types --command before the login shell is ready, so the tty still has
+// it in canonical mode: macOS drops input past MAX_CANON (1024 bytes, the
+// newline included), and the line never runs.
+const MAX_TYPED_COMMAND_BYTES = 1023;
 
 // ─── Shell-safe command building ──────────────────────────────────────────────
 
@@ -82,6 +87,20 @@ function quoteShell(token) {
  */
 function buildCommand(command, args) {
   return [command, ...args].map(quoteShell).join(" ");
+}
+
+/**
+ * Why the login shell would not run `command` as typed, or undefined. fish
+ * reads \\ and \\' inside single quotes as escapes, so a backslash would reach
+ * /bin/sh altered.
+ */
+function typedCommandProblem(command) {
+  const bytes = Buffer.byteLength(command);
+  if (command.includes("\\"))
+    return "it contains a backslash, which fish reads as an escape inside single quotes";
+  if (bytes > MAX_TYPED_COMMAND_BYTES)
+    return `it is ${bytes} bytes, past the tty's ${MAX_TYPED_COMMAND_BYTES}-byte line limit`;
+  return undefined;
 }
 
 // ─── Error classification ─────────────────────────────────────────────────────
@@ -801,25 +820,46 @@ export function createCmuxExecutionBackend({
       }
 
       // cmux types --command into the user's login shell, so it only starts
-      // /bin/sh; surface-launch.sh reports the surface's own id, refuses an
-      // abandoned launch, enters the cwd (new-pane has no working-directory
-      // flag), and execs env-bootstrap.sh, which reads the environment from
-      // the FIFO. The FIFO path, never its contents, appears in the command.
+      // /bin/sh with fixed paths; the request itself (cwd, command, args) goes
+      // in an owner-only launch file beside the FIFO, quoted for /bin/sh,
+      // which the shell would otherwise cap and could misread (see
+      // MAX_TYPED_COMMAND_BYTES and typedCommandProblem). surface-launch.sh
+      // reports the surface's own id, refuses an abandoned launch, enters the
+      // cwd (new-pane has no working-directory flag), and execs
+      // env-bootstrap.sh, which reads the environment from the FIFO. Neither
+      // the line nor the file carries an environment value.
       // The shell is not exec'd away (it absorbs signals sent to its own pid,
       // such as a prompt plugin's SIGUSR1) but exits right after the launcher,
       // so cmux closes the surface when the child exits, as herdr removes a
       // pane. A crashed child leaves no idle shell behind; pi-cohort reports
       // the failure to the parent.
-      const command = `${buildCommand("/bin/sh", [
-        LAUNCHER_PATH,
-        environmentPipe.directory,
-        environmentPipe.pipePath,
-        await resolveExecutable(cli),
-        request.cwd,
-        BOOTSTRAP_PATH,
-        request.command,
-        ...request.args,
-      ])}; exit`;
+      let command;
+      try {
+        command = `${buildCommand("/bin/sh", [
+          LAUNCHER_PATH,
+          environmentPipe.directory,
+          await resolveExecutable(cli),
+        ])}; exit`;
+        const problem = typedCommandProblem(command);
+        if (problem)
+          throw new Error(
+            `cannot type the launch line into the login shell: ${problem} (launch directory ${environmentPipe.directory}, launcher ${LAUNCHER_PATH})`,
+          );
+        await writeFile(
+          join(environmentPipe.directory, LAUNCH_FILE),
+          `set -- ${buildCommand(environmentPipe.pipePath, [
+            request.cwd,
+            BOOTSTRAP_PATH,
+            request.command,
+            ...request.args,
+          ])}\n`,
+          { mode: 0o600, flag: "wx" },
+        );
+      } catch (error) {
+        await environmentPipe.cleanup();
+        await subscription.stop();
+        throw error;
+      }
 
       let createRefs;
       try {

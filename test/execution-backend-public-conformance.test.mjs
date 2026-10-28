@@ -18,6 +18,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { createJiti } from "jiti";
 import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
+import { launchOf } from "./fixtures/cmux-launch.mjs";
 
 const jiti = createJiti(import.meta.url);
 const kit = await jiti.import("pi-cohort/execution-backend-testkit");
@@ -115,15 +116,10 @@ function makeStatefulFakeIo() {
       };
     }
     if (args[0] === "new-pane" || args[0] === "new-surface") {
-      // The FIFO path is embedded in --command (bootstrap approach); drain it
-      // so the background tee writer can complete.
-      const cmdIdx = args.indexOf("--command");
-      if (cmdIdx !== -1) {
-        const fifoMatch = args[cmdIdx + 1].match(
-          /'([^']+\/environment\.fifo)'/,
-        );
-        if (fifoMatch) await readFile(fifoMatch[1], "utf8");
-      }
+      // The launch file names the FIFO; drain it so the background tee
+      // writer can complete.
+      if (args.includes("--command"))
+        await readFile(launchOf(args).fifo, "utf8");
       let paneRef;
       if (args[0] === "new-pane") {
         paneRef = `pane:${nextNum}`;

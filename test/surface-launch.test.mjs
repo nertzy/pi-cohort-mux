@@ -44,13 +44,26 @@ async function fixture(t) {
   await writeFile(cli, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${cliLog}'\n`);
   await chmod(cli, 0o755);
   await execFile("mkfifo", ["-m", "600", fifo]);
-  // The child records its cwd and env so tests can tell whether it ran.
+  // The child records its cwd, argv, and env so tests can tell whether it ran.
   const child = [
     process.execPath,
     "-e",
-    `require("node:fs").writeFileSync(${JSON.stringify(ran)}, JSON.stringify({ cwd: process.cwd(), probe: process.env.PROBE }))`,
+    `require("node:fs").writeFileSync(${JSON.stringify(ran)}, JSON.stringify({ cwd: process.cwd(), probe: process.env.PROBE, args: process.argv.slice(1) }))`,
   ];
-  return { root, launchDir, fifo, cwd, cli, cliLog, ran, child };
+  const f = { root, launchDir, fifo, cwd, cli, cliLog, ran, child };
+  await writeLaunchFile(f);
+  return f;
+}
+
+/** The launch file the backend writes: /bin/sh sources it for its argv. */
+function writeLaunchFile(f, { cwd = f.cwd, args = [] } = {}) {
+  const quote = (token) => `'${String(token).replaceAll("'", "'\"'\"'")}'`;
+  const argv = [f.fifo, cwd, BOOTSTRAP, ...f.child, ...args];
+  return writeFile(
+    join(f.launchDir, "launch.sh"),
+    `set -- ${argv.map(quote).join(" ")}\n`,
+    { mode: 0o600 },
+  );
 }
 
 function launch(
@@ -61,11 +74,10 @@ function launch(
     const env = { ...process.env };
     delete env.CMUX_SURFACE_ID;
     if (surfaceId !== null) env.CMUX_SURFACE_ID = surfaceId;
-    const proc = spawn(
-      "/bin/sh",
-      [LAUNCHER, launchDir, f.fifo, f.cli, f.cwd, BOOTSTRAP, ...f.child],
-      { env, stdio: ["ignore", "ignore", "pipe"] },
-    );
+    const proc = spawn("/bin/sh", [LAUNCHER, launchDir, f.cli], {
+      env,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
     let stderr = "";
     proc.stderr.on("data", (chunk) => {
       stderr += chunk;
@@ -100,6 +112,7 @@ test("surface-launch: reports its surface id, then runs the child in its cwd wit
   assert.deepEqual(ran, {
     cwd: await import("node:fs/promises").then((fs) => fs.realpath(f.cwd)),
     probe: "piped",
+    args: [],
   });
   assert.equal(
     await exists(f.cliLog),
@@ -151,4 +164,49 @@ test("surface-launch: without CMUX_SURFACE_ID an abandoned launch exits without 
   assert.equal(code, 70);
   assert.equal(await exists(f.ran), false);
   assert.equal(await exists(f.cliLog), false);
+});
+
+test("surface-launch: a launch without its launch file closes its own surface and never runs the child", async (t) => {
+  const f = await fixture(t);
+  await rm(join(f.launchDir, "launch.sh"));
+
+  const { code, stderr } = await launch(f);
+
+  assert.equal(code, 70);
+  assert.match(stderr, /abandoned/);
+  assert.equal(await exists(f.ran), false);
+  assert.equal(
+    await readFile(f.cliLog, "utf8"),
+    "close-surface --surface SURFACE-UUID-1 --force\n",
+  );
+});
+
+test("surface-launch: the child gets its cwd and args exactly, backslashes, quotes, newlines, and length included", async (t) => {
+  const f = await fixture(t);
+  const cwd = join(f.root, "back\\slash 'dir'");
+  await mkdir(cwd);
+  const args = [
+    "a\\\\b",
+    "C:\\",
+    "it's",
+    "line\nbreak",
+    "$HOME",
+    "x".repeat(3000),
+  ];
+  await writeLaunchFile(f, { cwd, args });
+  const writer = spawn("/usr/bin/tee", [f.fifo], {
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  t.after(() => writer.kill("SIGKILL"));
+  writer.stdin.end("");
+
+  const { code } = await launch(f);
+
+  assert.equal(code, 0);
+  const ran = JSON.parse(await readFile(f.ran, "utf8"));
+  assert.equal(
+    ran.cwd,
+    await import("node:fs/promises").then((fs) => fs.realpath(cwd)),
+  );
+  assert.deepEqual(ran.args, args);
 });
