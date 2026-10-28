@@ -35,14 +35,20 @@ const adapters = await Promise.all(
 );
 const piLoader = piModule(resolvePi(), "dist/core/extensions/index.js");
 
-test("root is a private workspace and only the adapters activate in Pi", () => {
+test("root is a private workspace, the packages publish, and only the adapters activate in Pi", () => {
   assert.equal(root.private, true);
-  assert.equal(core.private, true);
   assert.deepEqual(root.workspaces, ["packages/*"]);
   assert.equal(root.pi, undefined);
   assert.equal(core.pi, undefined);
+  for (const manifest of [core, ...adapters.map(({ manifest }) => manifest)]) {
+    assert.equal(manifest.private, undefined, `${manifest.name} publishes`);
+    assert.deepEqual(manifest.publishConfig, {
+      access: "public",
+      provenance: true,
+    });
+  }
   for (const { manifest: adapter } of adapters) {
-    assert.equal(adapter.private, true);
+    assert.ok(adapter.keywords.includes("pi-package"), adapter.name);
     assert.deepEqual(adapter.pi.extensions, ["./src/index.js"]);
     assert.equal(adapter.dependencies["pi-cohort-mux"], core.version);
     assert.equal(
