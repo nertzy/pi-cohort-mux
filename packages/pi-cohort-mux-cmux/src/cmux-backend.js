@@ -34,7 +34,7 @@
  * pipe (FIFO). The bootstrap script (env-bootstrap.sh) runs inside the pane,
  * opens the FIFO itself, sets the env vars, then exec()s the real command.
  * Environment values never appear in argv, a regular file, or logs. The FIFO
- * path (not its contents) appears in the --command string — this is not a
+ * path (not its contents) appears in the owner-only launch file — this is not a
  * secret. request.secretPipePath has no defined child-side mapping in the v1
  * SPI transport, so launch rejects it instead of silently dropping it — loud
  * rejection is safer than undefined behavior.
@@ -68,10 +68,6 @@ const LAUNCHER_PATH = fileURLToPath(
   new URL("./surface-launch.sh", import.meta.url),
 );
 const LAUNCH_FILE = "launch.sh";
-// cmux types --command before the login shell is ready, so the tty still has
-// it in canonical mode: macOS drops input past MAX_CANON (1024 bytes, the
-// newline included), and the line never runs.
-const MAX_TYPED_COMMAND_BYTES = 1023;
 
 // ─── Shell-safe command building ──────────────────────────────────────────────
 
@@ -81,26 +77,12 @@ function quoteShell(token) {
 }
 
 /**
- * Build the shell command string passed to cmux --command.
+ * Build the shell command string cmux runs as a surface's initial command.
  * Only command + args are included; environment and secretPipePath are
  * intentionally excluded (see security note above).
  */
 function buildCommand(command, args) {
   return [command, ...args].map(quoteShell).join(" ");
-}
-
-/**
- * Why the login shell would not run `command` as typed, or undefined. fish
- * reads \\ and \\' inside single quotes as escapes, so a backslash would reach
- * /bin/sh altered.
- */
-function typedCommandProblem(command) {
-  const bytes = Buffer.byteLength(command);
-  if (command.includes("\\"))
-    return "it contains a backslash, which fish reads as an escape inside single quotes";
-  if (bytes > MAX_TYPED_COMMAND_BYTES)
-    return `it is ${bytes} bytes, past the tty's ${MAX_TYPED_COMMAND_BYTES}-byte line limit`;
-  return undefined;
 }
 
 // ─── Error classification ─────────────────────────────────────────────────────
@@ -143,8 +125,8 @@ function createOutcomeUnknown(error) {
 
 /**
  * Resolve a bare CLI name against this process's PATH. The child surface runs
- * under the user's login shell, whose PATH need not reach cmux (a CI runner's
- * bash does not), and a late surface must be able to close itself.
+ * with the cmux app's environment, whose PATH need not reach the CLI, and a
+ * late surface must be able to close itself.
  */
 async function resolveExecutable(name) {
   if (name.includes("/")) return name;
@@ -182,23 +164,30 @@ function scrubMuxEnvironment(environment) {
 
 // ─── Surface ref parsing ─────────────────────────────────────────────────────
 
-/** Parse "OK surface:N pane:M workspace:K" from new-pane/new-surface stdout. */
+/** Parse the refs from `cmux rpc pane.create|surface.create`'s JSON result. */
 function parseCreateRefs(output) {
-  const text = output.trim();
-  const surface = text.match(/(?:^|\s)(surface:\d+)(?:\s|$)/);
-  const pane = text.match(/(?:^|\s)(pane:\d+)(?:\s|$)/);
-  const workspace = text.match(/(?:^|\s)(workspace:\d+)(?:\s|$)/);
-  if (!surface || !workspace) {
+  let result;
+  try {
+    result = JSON.parse(output);
+  } catch {
+    result = undefined;
+  }
+  const ref = (key, kind) =>
+    typeof result?.[key] === "string" &&
+    new RegExp(`^${kind}:\\d+$`).test(result[key])
+      ? result[key]
+      : null;
+  const surfaceRef = ref("surface_ref", "surface");
+  const workspaceRef = ref("workspace_ref", "workspace");
+  if (!surfaceRef || !workspaceRef) {
     throw Object.assign(
-      new Error(`Unexpected cmux create output: ${JSON.stringify(text)}`),
+      new Error(
+        `Unexpected cmux create output: ${JSON.stringify(output.trim())}`,
+      ),
       { unexpectedCreateOutput: true },
     );
   }
-  return {
-    surfaceRef: surface[1],
-    paneRef: pane?.[1] ?? null,
-    workspaceRef: workspace[1],
-  };
+  return { surfaceRef, paneRef: ref("pane_ref", "pane"), workspaceRef };
 }
 
 // ─── Owned-surface close ─────────────────────────────────────────────────────
@@ -527,33 +516,23 @@ export function createCmuxExecutionBackend({
         state.helperPane = null;
       }
     }
-    const createArgs = helper
-      ? [
-          "new-surface",
-          "--workspace",
-          parentWorkspace,
-          "--pane",
-          helper.ref,
-          "--type",
-          "terminal",
-          "--focus",
-          "false",
-          "--command",
-          command,
-        ]
-      : [
-          "new-pane",
-          "--workspace",
-          parentWorkspace,
-          "--type",
-          "terminal",
-          "--direction",
-          "right",
-          "--focus",
-          "false",
-          "--command",
-          command,
-        ];
+    // The CLI's new-pane/new-surface --command types its text into whatever
+    // shell the surface starts (initial_input); the raw v2 methods take
+    // initial_command, which cmux runs as the surface's own process.
+    const params = {
+      workspace_id: parentWorkspace,
+      type: "terminal",
+      focus: false,
+      initial_command: command,
+    };
+    const [method, placement] = helper
+      ? ["surface.create", { pane_id: helper.ref }]
+      : ["pane.create", { direction: "right" }];
+    const createArgs = [
+      "rpc",
+      method,
+      JSON.stringify({ ...params, ...placement }),
+    ];
     const result = await execFileFn(cli, createArgs, {
       timeout: cliDeadlineMs,
       signal,
@@ -819,32 +798,24 @@ export function createCmuxExecutionBackend({
         throw error;
       }
 
-      // cmux types --command into the user's login shell, so it only starts
-      // /bin/sh with fixed paths; the request itself (cwd, command, args) goes
-      // in an owner-only launch file beside the FIFO, quoted for /bin/sh,
-      // which the shell would otherwise cap and could misread (see
-      // MAX_TYPED_COMMAND_BYTES and typedCommandProblem). surface-launch.sh
-      // reports the surface's own id, refuses an abandoned launch, enters the
-      // cwd (new-pane has no working-directory flag), and execs
-      // env-bootstrap.sh, which reads the environment from the FIFO. Neither
-      // the line nor the file carries an environment value.
-      // The shell is not exec'd away (it absorbs signals sent to its own pid,
-      // such as a prompt plugin's SIGUSR1) but exits right after the launcher,
-      // so cmux closes the surface when the child exits, as herdr removes a
-      // pane. A crashed child leaves no idle shell behind; pi-cohort reports
-      // the failure to the parent.
+      // cmux runs the initial command as the surface's own process, so no
+      // shell starts and nothing is typed. cmux holds a surface open after
+      // that command exits, so surface-launch.sh closes its own surface when
+      // the child exits, as herdr removes a pane: a crashed child leaves no
+      // tab behind, and pi-cohort reports the failure to the parent. The
+      // command names only fixed paths, since cmux keeps it in its surface
+      // records; the request itself (cwd, command, args) goes in an
+      // owner-only launch file beside the FIFO, quoted for /bin/sh.
+      // surface-launch.sh reports the surface's own id, refuses an abandoned
+      // launch, enters the cwd, and runs env-bootstrap.sh, which reads the
+      // environment from the FIFO. Neither the command nor the file carries
+      // an environment value.
       let command;
       try {
-        command = `${buildCommand("/bin/sh", [
-          LAUNCHER_PATH,
+        command = buildCommand(LAUNCHER_PATH, [
           environmentPipe.directory,
           await resolveExecutable(cli),
-        ])}; exit`;
-        const problem = typedCommandProblem(command);
-        if (problem)
-          throw new Error(
-            `cannot type the launch line into the login shell: ${problem} (launch directory ${environmentPipe.directory}, launcher ${LAUNCHER_PATH})`,
-          );
+        ]);
         await writeFile(
           join(environmentPipe.directory, LAUNCH_FILE),
           `set -- ${buildCommand(environmentPipe.pipePath, [
@@ -888,7 +859,7 @@ export function createCmuxExecutionBackend({
           await environmentPipe?.cleanup();
         }
         // Snapshot for UUID correlation (spike: three-way UUID correlation).
-        // The child has its environment by now, and the login shell exits
+        // The child has its environment by now, and its surface closes
         // with it, so a child that dies at once takes its surface (and a
         // last-surface helper pane) with it before this snapshot.
         const closedEarly = (cause) =>

@@ -5,7 +5,11 @@ import { Readable } from "node:stream";
 import test from "node:test";
 
 import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
-import { launchOf } from "./fixtures/cmux-launch.mjs";
+import {
+  createMethod,
+  createParams,
+  launchOf,
+} from "./fixtures/cmux-launch.mjs";
 
 // launch() derives the parent workspace from the environment; pin it hermetically.
 process.env.CMUX_WORKSPACE_ID ??= "AABBCCDD-0000-0000-0000-111122223333";
@@ -69,22 +73,21 @@ test("hands the requested environment through a child-side bootstrap reading an 
   let launchedOptions;
 
   const execFile = async (_command, args, options) => {
-    if (args[0] === "new-pane") {
+    if (createMethod(args) === "pane.create") {
       launchedOptions = options;
 
       // --env-file must NOT appear in createArgs (bootstrap reads the FIFO itself)
       assert.equal(
         args.includes("--env-file"),
         false,
-        "--env-file must not appear in new-pane args",
+        "--env-file must not appear in pane.create args",
       );
 
-      // --command starts the launcher; the launch file names the bootstrap
-      // and the FIFO, and carries no environment value either.
-      assert.notEqual(
-        args.indexOf("--command"),
-        -1,
-        "--command must be present",
+      // initial_command starts the launcher; the launch file names the
+      // bootstrap and the FIFO, and carries no environment value either.
+      assert.ok(
+        createParams(args).initial_command,
+        "initial_command must be present",
       );
       const launch = launchOf(args);
       assert.match(launch.bootstrap, /\/env-bootstrap\.sh$/);
@@ -119,7 +122,12 @@ test("hands the requested environment through a child-side bootstrap reading an 
 
       // Read from the FIFO so the background tee writer can complete
       environmentPayload = await readFile(fifoPipePath, "utf8");
-      return { stdout: `OK surface:1 pane:1 ${WORKSPACE_REF}\n`, stderr: "" };
+      const result = {
+        surface_ref: "surface:1",
+        pane_ref: "pane:1",
+        workspace_ref: WORKSPACE_REF,
+      };
+      return { stdout: `${JSON.stringify(result)}\n`, stderr: "" };
     }
     if (args[0] === "--id-format") {
       return { stdout: `${JSON.stringify(snapshot())}\n`, stderr: "" };

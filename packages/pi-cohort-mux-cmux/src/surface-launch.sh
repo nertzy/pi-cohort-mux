@@ -1,13 +1,13 @@
 #!/bin/sh
 # surface-launch: the first thing a cmux child surface runs.
-# Usage: sh surface-launch.sh <launch-dir> <cmux-cli>
+# Usage: surface-launch.sh <launch-dir> <cmux-cli>
 #
-# cmux types --command into the user's login shell (bash, zsh, fish, ...)
-# before it is ready, so the typed line carries only fixed paths: the tty
-# drops input past 1023 bytes, and fish reads \\ and \' inside single quotes as
-# escapes. The request lives in <launch-dir>/launch.sh, an owner-only file
-# whose single `set -- <fifo> <cwd> <bootstrap> <cmd> [args...]` line, quoted
-# for /bin/sh, this script sources. Everything that must behave identically
+# cmux runs this script as the surface's own process. It is executable and
+# runs under its shebang, so no shell profile is read. cmux keeps the initial
+# command in its surface records, so that command carries only fixed paths.
+# The request lives in <launch-dir>/launch.sh, an owner-only file whose
+# single `set -- <fifo> <cwd> <bootstrap> <cmd> [args...]` line, quoted for
+# /bin/sh, this script sources. Everything that must behave identically
 # lives here, under /bin/sh.
 #
 #   1. Report this surface's own identity: write $CMUX_SURFACE_ID to
@@ -18,19 +18,27 @@
 #   2. Refuse to start an abandoned launch: once the launcher gives up it
 #      withdraws the FIFO, then removes the launch directory. Any absence
 #      (directory, launch file, or FIFO) means nobody will collect this
-#      surface, so it closes itself (it is ours) and exits 70 without running
-#      the child.
-#   3. cd to the requested cwd (exit 71 on failure), then exec the env
-#      bootstrap, which reads the environment from the FIFO.
+#      surface, so it exits 70 without running the child.
+#   3. cd to the requested cwd (exit 71 on failure), then run the env
+#      bootstrap, which reads the environment from the FIFO and execs the
+#      child, and exit with the child's status.
+#
+# cmux holds a surface open after its initial command exits, so on every
+# exit this script closes its own surface (it is ours). It stays the
+# child's parent to do so: SIGINT and SIGQUIT from the surface reach the
+# child, and this script only notes them, waiting for the child to finish.
 
 _sl_dir=$1 _sl_cli=$2
 _sl_id=${CMUX_SURFACE_ID-}
 
+if [ -n "$_sl_id" ]; then
+  trap '"$_sl_cli" close-surface --surface "$_sl_id" --force >/dev/null 2>&1' EXIT
+fi
+# Caught, not ignored, so the child starts with the default handlers.
+trap : INT QUIT
+
 _sl_abandon() {
   echo "pi-cohort-mux: launch abandoned; closing this surface" >&2
-  if [ -n "$_sl_id" ]; then
-    "$_sl_cli" close-surface --surface "$_sl_id" --force >/dev/null 2>&1
-  fi
   exit 70
 }
 
@@ -43,4 +51,4 @@ shift 3
 [ -p "$_sl_fifo" ] || _sl_abandon
 cd "$_sl_cwd" || exit 71
 
-exec /bin/sh "$_sl_bootstrap" "$_sl_fifo" "$@"
+/bin/sh "$_sl_bootstrap" "$_sl_fifo" "$@"

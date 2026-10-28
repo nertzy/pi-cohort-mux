@@ -511,7 +511,7 @@ test("production cmux backend: a child that exits takes its surface with it", {
     assert.equal(
       await verifyGone(ownedSurface),
       true,
-      "the login shell exited with the child, so cmux closed the surface",
+      "the launcher closed its surface when the child exited",
     );
     ownedSurface = undefined;
   } finally {
@@ -524,8 +524,8 @@ test("production cmux backend: a child that exits takes its surface with it", {
 test("production cmux backend: any cwd and args reach the child exactly, however long or backslashed", {
   skip: skipReason || false,
 }, async () => {
-  // The login shell would drop a typed line past 1023 bytes and fish would
-  // misread backslashes; the request travels in the launch file instead.
+  // The request travels in the launch file, quoted for /bin/sh, whatever its
+  // length or characters.
   const backend = createCmuxBackend(BACKEND_DEADLINES);
   const tempDir = await mkdtemp(join(tmpdir(), "pi-cohort-mux-smoke-"));
   const cwd = join(

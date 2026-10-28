@@ -39,11 +39,10 @@ terminal and both detect.
 ## cmux placement
 
 Inside a cmux terminal, children open as background tabs in a helper pane of
-the caller's workspace. cmux types a short, fixed launch line into the tab's
-login shell; the child's cwd, command, and arguments travel in an owner-only
-launch file, so their length and characters never pass through that shell. The
-shell exits with the child, so cmux closes a child's tab when the child exits,
-crashed or not. `pi-cohort` reports a failed child to its parent with
+the caller's workspace. cmux runs the adapter's launcher as the tab's own
+process, so nothing is typed into a shell; the child's cwd, command, and
+arguments travel in an owner-only launch file. The launcher closes a child's
+tab when the child exits, crashed or not. `pi-cohort` reports a failed child to its parent with
 the child's session file.
 
 ## herdr placement

@@ -34,7 +34,17 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test, { after, before } from "node:test";
 import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
-import { commandTokens, launchOf } from "./fixtures/cmux-launch.mjs";
+import {
+  commandTokens,
+  createMethod,
+  createParams,
+  launchOf,
+} from "./fixtures/cmux-launch.mjs";
+
+const isPaneCreate = (c) =>
+  c.type === "exec" && createMethod(c.args) === "pane.create";
+const isSurfaceCreate = (c) =>
+  c.type === "exec" && createMethod(c.args) === "surface.create";
 
 // ─── Fake child process for the events subscription ───────────────────────────
 
@@ -81,6 +91,21 @@ const FAKE_SF_REF = "surface:100";
 const FAKE_PN_ID = "EEDDCCBB-0000-0000-0000-777788889999";
 const FAKE_PN_REF = "pane:50";
 
+/** The result `cmux rpc pane.create|surface.create` prints. */
+function fakeCreateResult() {
+  return {
+    window_id: "FFEEDDCC-0000-0000-0000-000011112222",
+    window_ref: "window:1",
+    workspace_id: FAKE_WS_ID,
+    workspace_ref: FAKE_WS_REF,
+    pane_id: FAKE_PN_ID,
+    pane_ref: FAKE_PN_REF,
+    surface_id: FAKE_SF_ID,
+    surface_ref: FAKE_SF_REF,
+    type: "terminal",
+  };
+}
+
 function fakeSnapshot() {
   return {
     workspace_id: FAKE_WS_ID,
@@ -120,7 +145,7 @@ after(() => {
  *   snapshotError    – make list-pane-surfaces throw a custom error
  *   closeNotFound    – make workspace close throw "not_found"
  *   closeError       – make workspace close throw a custom error
- *   createError      – make new-pane/new-surface throw this error
+ *   createError      – make pane.create/surface.create throw this error
  *   fifoUnread       – create succeeds but the child never opens the env FIFO
  *                      (e.g. its `cd` failed), so the hand-off never completes
  *   snapshotWithoutSurface – snapshots omit the created surface
@@ -156,6 +181,7 @@ function makeFakeIo({
     onSnapshot: null,
     surfaceBusy: false,
     onCreate: null,
+    createOutput: null,
   };
 
   async function execFile(_cli, args, opts) {
@@ -167,9 +193,9 @@ function makeFakeIo({
     if (args[0] === "capabilities") {
       return { stdout: `${JSON.stringify({ capabilities })}\n`, stderr: "" };
     }
-    if (args[0] === "new-pane" || args[0] === "new-surface") {
-      if (args[0] === "new-surface" && behavior.paneGone) {
-        const err = Object.assign(new Error("new-surface failed"), {
+    if (createMethod(args)) {
+      if (createMethod(args) === "surface.create" && behavior.paneGone) {
+        const err = Object.assign(new Error("surface.create failed"), {
           stderr: "Error: not_found: Pane not found",
         });
         throw err;
@@ -179,7 +205,7 @@ function makeFakeIo({
       // The launch file in the launch directory names the FIFO. Record what
       // the launcher would source, then drain the FIFO so the background tee
       // writer can complete.
-      if (args.includes("--command")) {
+      if (createParams(args).initial_command) {
         const launch = launchOf(args);
         launch.mode = (await stat(launch.launchFile)).mode & 0o777;
         launchFiles.push(launch);
@@ -187,10 +213,9 @@ function makeFakeIo({
           fifoPayloads.push(await readFile(launch.fifo, "utf8"));
       }
       behavior.paneGone = false;
-      return {
-        stdout: `OK ${FAKE_SF_REF} ${FAKE_PN_REF} ${FAKE_WS_REF}\n`,
-        stderr: "",
-      };
+      const stdout =
+        behavior.createOutput ?? `${JSON.stringify(fakeCreateResult())}\n`;
+      return { stdout, stderr: "" };
     }
     if (
       args[0] === "--id-format" &&
@@ -257,7 +282,7 @@ const pathExists = (path) =>
 
 /** An execFile timeout as Node reports it: the child was killed. */
 const createTimeout = () =>
-  Object.assign(new Error("Command failed: cmux new-pane (timed out)"), {
+  Object.assign(new Error("Command failed: cmux rpc pane.create (timed out)"), {
     killed: true,
     signal: "SIGTERM",
     code: null,
@@ -421,9 +446,7 @@ test("launch: subscribes to events BEFORE creating the surface (spike ordering)"
   const spawnIdx = calls.findIndex(
     (c) => c.type === "spawn" && c.args[0] === "events",
   );
-  const createIdx = calls.findIndex(
-    (c) => c.type === "exec" && c.args[0] === "new-pane",
-  );
+  const createIdx = calls.findIndex(isPaneCreate);
   assert.ok(spawnIdx >= 0, "events subscription was started");
   assert.ok(createIdx >= 0, "surface was created");
   assert.ok(
@@ -482,17 +505,12 @@ test("launch: child command starts in the request cwd", async () => {
   const lease = await backend.launch(request);
 
   const [launch] = launchFiles;
-  assert.equal(
-    launch.sh,
-    "/bin/sh",
-    "the login shell only starts /bin/sh; the launcher does the rest",
-  );
   assert.match(launch.launcher, /\/surface-launch\.sh$/);
   assert.ok(
     launch.cli === "cmux" || launch.cli.startsWith("/"),
     "the surface can close itself with the same CLI",
   );
-  assert.deepEqual(launch.extra, [], "nothing else is typed");
+  assert.deepEqual(launch.extra, [], "nothing else is in the initial command");
   assert.equal(launch.fifo, join(launch.launchDir, "environment.fifo"));
   assert.equal(
     launch.cwd,
@@ -511,95 +529,43 @@ test("launch: child command starts in the request cwd", async () => {
   await lease.release();
 });
 
-test("launch: the typed line stays short and backslash-free whatever the cwd and args", async () => {
-  // cmux types the line into the login shell before it is ready: the tty
-  // drops input past 1023 bytes, and fish reads \\ and \' inside single
-  // quotes as escapes. Only fixed paths are typed; the request travels in the
-  // launch file, which /bin/sh sources.
+test("launch: the initial command names only fixed paths; the request travels in the launch file", async () => {
+  // cmux keeps a surface's initial command in its surface records, so the
+  // child's cwd and args stay in the owner-only launch file, which /bin/sh
+  // sources, however long or odd they are.
   const { execFile, spawn, calls, launchFiles } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const cwd = `/deep/${"d".repeat(600)}/back\\slash`;
   const args = ["a\\\\b", "C:\\", "it's", "line\nbreak", "x".repeat(3000)];
   const lease = await backend.launch(makeRequest({ cwd, args }));
 
-  const createCall = calls.find(
-    (c) => c.type === "exec" && c.args[0] === "new-pane",
-  );
-  const command = createCall.args[createCall.args.indexOf("--command") + 1];
-  assert.ok(Buffer.byteLength(command) < 1024, "fits the tty's line limit");
-  assert.equal(command.includes("\\"), false, "fish has no escape to misread");
+  const command = createParams(calls.find(isPaneCreate).args).initial_command;
+  assert.equal(command.includes("deep"), false, "the cwd is not in it");
+  assert.equal(command.includes("xxx"), false, "the args are not in it");
   assert.equal(launchFiles[0].cwd, cwd);
   assert.deepEqual(launchFiles[0].child, ["pi", ...args]);
   await lease.release();
 });
 
-/** `root` extended with directory names to `length` bytes (or one more). */
-function pathOfLength(root, length) {
-  let path = root;
-  while (path.length < length)
-    path = join(
-      path,
-      "l".repeat(Math.max(1, Math.min(250, length - path.length - 1))),
-    );
-  return path;
-}
-
-test("launch: a typed line the login shell would mangle is refused before cmux is called", async (t) => {
-  const savedTmpdir = process.env.TMPDIR;
-  t.after(() => {
-    if (savedTmpdir === undefined) delete process.env.TMPDIR;
-    else process.env.TMPDIR = savedTmpdir;
-  });
-  const root = await mkdtemp(join(tmpdir(), "pi-cohort-mux-typed-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-
-  for (const [name, dir] of [
-    ["backslash", join(root, "back\\slash")],
-    // 960 bytes overflows the typed line with any launcher path, yet leaves
-    // room for the FIFO path inside it under macOS's 1024-byte PATH_MAX.
-    ["long", pathOfLength(root, 960)],
-  ]) {
-    await mkdir(dir, { recursive: true });
-    process.env.TMPDIR = dir;
-    const { execFile, spawn, calls } = makeFakeIo();
-    const backend = createCmuxBackend({ execFile, spawn });
-
-    await assert.rejects(
-      backend.launch(makeRequest()),
-      /login shell/,
-      `${name} launch directory`,
-    );
-    assert.equal(
-      calls.some((c) => c.args[0] === "new-pane"),
-      false,
-      `${name}: no surface created`,
-    );
-    assert.deepEqual(
-      (await readdir(dir)).filter((e) => e.startsWith("pi-cohort-mux-env-")),
-      [],
-      `${name}: launch directory removed`,
-    );
-  }
-});
-
-test("launch: the login shell exits with the child, so cmux closes the surface like herdr removes a pane", async () => {
+test("launch: cmux runs the launcher as the surface's own process, with nothing typed", async () => {
+  // The launcher closes its own surface when the child exits, as herdr
+  // removes a pane, so nothing follows it on the command line.
   const { execFile, spawn, calls } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest());
 
-  const createCall = calls.find(
-    (c) => c.type === "exec" && c.args[0] === "new-pane",
-  );
-  const command = createCall.args[createCall.args.indexOf("--command") + 1];
-  assert.match(
-    command,
-    /^'\/bin\/sh' .*; exit$/,
-    "the launcher is not exec'd (the shell absorbs its own signals) and the shell exits after it",
-  );
+  const createCall = calls.find(isPaneCreate);
+  const params = createParams(createCall.args);
+  assert.equal(params.type, "terminal");
+  assert.equal(params.initial_input, undefined, "nothing is typed");
+  const [launcher, ...rest] = commandTokens(createCall.args);
+  assert.match(launcher, /\/surface-launch\.sh$/, "the launcher runs itself");
+  assert.equal(rest.length, 2, "launch directory and CLI only");
+  assert.equal(params.initial_command.includes(";"), false, "no `; exit`");
   await lease.release();
 });
 
-test("launch: the launcher gets the CLI's absolute path, not the login shell's PATH", async (t) => {
+test("launch: the launcher gets the CLI's absolute path, not the surface's PATH", async (t) => {
   const bin = await mkdtemp(join(tmpdir(), "pi-cohort-mux-bin-"));
   t.after(() => rm(bin, { recursive: true, force: true }));
   await writeFile(join(bin, "cmux"), "#!/bin/sh\n");
@@ -617,7 +583,7 @@ test("launch: the launcher gets the CLI's absolute path, not the login shell's P
   assert.equal(
     launchFiles[0].cli,
     join(bin, "cmux"),
-    "a late surface can reach cmux even if its login shell cannot",
+    "a late surface can reach cmux even if its PATH cannot",
   );
   await lease.release();
 });
@@ -627,10 +593,8 @@ test("launch: an empty environment still goes through the launcher's FIFO", asyn
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest({ environment: {} }));
 
-  const createCall = calls.find(
-    (c) => c.type === "exec" && c.args[0] === "new-pane",
-  );
-  assert.match(commandTokens(createCall.args)[1], /\/surface-launch\.sh$/);
+  const createCall = calls.find(isPaneCreate);
+  assert.match(commandTokens(createCall.args)[0], /\/surface-launch\.sh$/);
   assert.deepEqual(
     fifoPayloads,
     [""],
@@ -639,17 +603,12 @@ test("launch: an empty environment still goes through the launcher's FIFO", asyn
   await lease.release();
 });
 
-test("launch: creates the surface with --focus false (no focus stealing)", async () => {
+test("launch: creates the surface with focus false (no focus stealing)", async () => {
   const { execFile, spawn, calls } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const lease = await backend.launch(makeRequest());
 
-  const createCall = calls.find(
-    (c) => c.type === "exec" && c.args[0] === "new-pane",
-  );
-  const focusIdx = createCall.args.indexOf("--focus");
-  assert.ok(focusIdx >= 0, "--focus present");
-  assert.equal(createCall.args[focusIdx + 1], "false");
+  assert.equal(createParams(calls.find(isPaneCreate).args).focus, false);
 
   await lease.release();
 });
@@ -661,36 +620,28 @@ test("launch: first child creates the right-side helper pane, later children bec
   const first = await backend.launch(makeRequest());
   const second = await backend.launch(makeRequest());
 
-  const newPaneCalls = calls.filter(
-    (c) => c.type === "exec" && c.args[0] === "new-pane",
-  );
-  const newSurfaceCalls = calls.filter(
-    (c) => c.type === "exec" && c.args[0] === "new-surface",
-  );
+  const newPaneCalls = calls.filter(isPaneCreate);
+  const newSurfaceCalls = calls.filter(isSurfaceCreate);
   assert.equal(newPaneCalls.length, 1, "exactly one helper pane created");
   assert.equal(
     newSurfaceCalls.length,
     1,
     "second child added as a surface tab",
   );
-  assert.ok(newPaneCalls[0].args.includes("--direction"));
-  assert.ok(
-    newPaneCalls[0].args.includes("right"),
-    "helper pane opens to the right",
-  );
-  const paneIdx = newSurfaceCalls[0].args.indexOf("--pane");
-  assert.ok(paneIdx >= 0, "--pane present on new-surface");
+  const paneParams = createParams(newPaneCalls[0].args);
+  const surfaceParams = createParams(newSurfaceCalls[0].args);
+  assert.equal(paneParams.direction, "right", "helper pane opens to the right");
   assert.equal(
-    newSurfaceCalls[0].args[paneIdx + 1],
+    surfaceParams.pane_id,
     FAKE_PN_REF,
     "tab lands in the helper pane",
   );
-  const wsIdx = newPaneCalls[0].args.indexOf("--workspace");
   assert.equal(
-    newPaneCalls[0].args[wsIdx + 1],
+    paneParams.workspace_id,
     FAKE_WS_ID,
     "children live in the parent workspace",
   );
+  assert.equal(surfaceParams.workspace_id, FAKE_WS_ID);
 
   await first.release();
   await second.release();
@@ -707,23 +658,21 @@ test("launch: concurrent first launches share one helper pane", async () => {
   ]);
 
   const creates = calls.filter(
-    (c) =>
-      c.type === "exec" &&
-      (c.args[0] === "new-pane" || c.args[0] === "new-surface"),
+    (c) => c.type === "exec" && createMethod(c.args),
   );
   assert.deepEqual(
-    creates.map((c) => c.args[0]),
-    ["new-pane", "new-surface", "new-surface"],
+    creates.map((c) => createMethod(c.args)),
+    ["pane.create", "surface.create", "surface.create"],
     "one pane, then tabs in it",
   );
   for (const create of creates.slice(1))
-    assert.equal(create.args[create.args.indexOf("--pane") + 1], FAKE_PN_REF);
+    assert.equal(createParams(create.args).pane_id, FAKE_PN_REF);
   await Promise.all(leases.map((lease) => lease.release()));
 });
 
 test("launch: a failed helper-pane create does not block the next launch", async () => {
   const { execFile, spawn, calls, behavior } = makeFakeIo({
-    createError: new Error("new-pane failed"),
+    createError: new Error("pane.create failed"),
   });
   const backend = createCmuxBackend({ execFile, spawn });
 
@@ -739,9 +688,7 @@ test("launch: a failed helper-pane create does not block the next launch", async
   behavior.createError = null;
   const lease = await backend.launch(makeRequest());
 
-  const newPanes = calls.filter(
-    (c) => c.type === "exec" && c.args[0] === "new-pane",
-  );
+  const newPanes = calls.filter(isPaneCreate);
   assert.equal(
     newPanes.length,
     3,
@@ -758,9 +705,7 @@ test("launch: collapsed helper pane is recreated instead of failing", async () =
   behavior.paneGone = true; // user closed the helper pane between launches
   const second = await backend.launch(makeRequest());
 
-  const newPaneCalls = calls.filter(
-    (c) => c.type === "exec" && c.args[0] === "new-pane",
-  );
+  const newPaneCalls = calls.filter(isPaneCreate);
   assert.equal(newPaneCalls.length, 2, "a fresh helper pane was created");
 
   await first.release();
@@ -1337,9 +1282,30 @@ test("launch: a timed-out create with no surface reporting rejects after the gra
   );
 });
 
+test("launch: a create result without refs is an unknown outcome, so the surface that reports is closed", async () => {
+  const io = makeFakeIo({ fifoUnread: true });
+  // The CLI's human summary instead of the rpc's JSON result.
+  io.behavior.createOutput = `OK ${FAKE_SF_REF} ${FAKE_PN_REF} ${FAKE_WS_REF}\n`;
+  lateSurface(io, "ORPHAN-UUID");
+  const backend = createCmuxBackend({
+    execFile: io.execFile,
+    spawn: io.spawn,
+    orphanGraceMs: 1_000,
+  });
+
+  await assert.rejects(
+    backend.launch(makeRequest()),
+    /Unexpected cmux create output/,
+  );
+  assert.deepEqual(
+    closeSurfaceCalls(io.calls).map((c) => c.args.at(-2)),
+    ["ORPHAN-UUID"],
+  );
+});
+
 test("launch: a create cmux rejects outright does not wait for an orphan", async () => {
   const io = makeFakeIo({
-    createError: Object.assign(new Error("new-pane failed"), {
+    createError: Object.assign(new Error("pane.create failed"), {
       stderr: "Error: invalid_params: Missing or invalid direction",
     }),
   });
@@ -1350,7 +1316,7 @@ test("launch: a create cmux rejects outright does not wait for an orphan", async
   });
 
   const started = Date.now();
-  await assert.rejects(backend.launch(makeRequest()), /new-pane failed/);
+  await assert.rejects(backend.launch(makeRequest()), /pane.create failed/);
   assert.ok(Date.now() - started < 1_000, "no grace wait when cmux answered");
   assert.deepEqual(closeSurfaceCalls(io.calls), []);
 });
@@ -1371,7 +1337,7 @@ test("launch: an orphan that cannot be closed is reported alongside the create f
     assert.ok(error instanceof AggregateError);
     assert.deepEqual(
       error.errors.map((e) => e.message),
-      ["Command failed: cmux new-pane (timed out)", "socket gone"],
+      ["Command failed: cmux rpc pane.create (timed out)", "socket gone"],
     );
     assert.match(error.message, /ORPHAN-UUID/);
     return true;
@@ -1462,13 +1428,12 @@ test("launch: launches queued behind a timed-out create fail fast instead of eac
   );
   // Whichever launch took the lock first timed out; the other failed fast.
   const messages = results.map((r) => r.reason.message).sort();
-  assert.match(messages[0], /^Command failed: cmux new-pane \(timed out\)$/);
-  assert.match(messages[1], /^cmux backend is cooling down/);
-  assert.equal(
-    io.calls.filter((c) => c.type === "exec" && c.args[0] === "new-pane")
-      .length,
-    1,
+  assert.match(
+    messages[0],
+    /^Command failed: cmux rpc pane\.create \(timed out\)$/,
   );
+  assert.match(messages[1], /^cmux backend is cooling down/);
+  assert.equal(io.calls.filter(isPaneCreate).length, 1);
 });
 
 // ─── events subscription lifecycle ───────────────────────────────────────────
@@ -1540,7 +1505,7 @@ test("launch: missing cmux binary (error + close, no exit) rejects instead of ha
 
   await assert.rejects(withinDeadline(backend.launch(makeRequest())), /ENOENT/);
   assert.equal(
-    calls.some((c) => c.args[0] === "new-pane"),
+    calls.some(isPaneCreate),
     false,
     "no surface created without an ack",
   );
@@ -2083,9 +2048,7 @@ test(
 
     const execs = calls.filter((c) => c.type === "exec");
     assert.ok(
-      execs.some(
-        (c) => c.args.includes("new-pane") || c.args.includes("new-surface"),
-      ),
+      execs.some((c) => createMethod(c.args)),
       "a create call ran",
     );
     assert.ok(

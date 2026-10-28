@@ -9,9 +9,9 @@
  *     "sentinelMatch": <boolean: sentinelEcho === sentinelValue>,
  *     "cwd": "<process.cwd()>"
  *   }
- * Then stays alive until the surface is closed, as a live child would: the
- * login shell exits with the child, so an exited child takes its surface with
- * it. Exits 1 if the evidence cannot be written.
+ * Then stays alive until the surface is closed, as a live child would: an
+ * exited child takes its surface with it. Exits 1 if the evidence cannot be
+ * written.
  *
  * Security note: no secrets are written. The sentinel is a synthetic test UUID,
  * not a real credential. The output is the echoed sentinel, a boolean, and cwd.

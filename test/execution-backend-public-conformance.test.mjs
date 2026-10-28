@@ -18,7 +18,11 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { createJiti } from "jiti";
 import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
-import { launchOf } from "./fixtures/cmux-launch.mjs";
+import {
+  createMethod,
+  createParams,
+  launchOf,
+} from "./fixtures/cmux-launch.mjs";
 
 const jiti = createJiti(import.meta.url);
 const kit = await jiti.import("pi-cohort/execution-backend-testkit");
@@ -115,20 +119,20 @@ function makeStatefulFakeIo() {
         stderr: "",
       };
     }
-    if (args[0] === "new-pane" || args[0] === "new-surface") {
+    if (createMethod(args)) {
       // The launch file names the FIFO; drain it so the background tee
       // writer can complete.
-      if (args.includes("--command"))
+      if (createParams(args).initial_command)
         await readFile(launchOf(args).fifo, "utf8");
       let paneRef;
-      if (args[0] === "new-pane") {
+      if (createMethod(args) === "pane.create") {
         paneRef = `pane:${nextNum}`;
         panes.set(paneRef, {
           paneId: `pane-id-${nextNum}`,
           surfaceRefs: new Set(),
         });
       } else {
-        paneRef = args[args.indexOf("--pane") + 1];
+        paneRef = createParams(args).pane_id;
         if (!panes.has(paneRef)) {
           const err = Object.assign(new Error("not_found"), {
             stderr: "Error: not_found: Pane not found",
@@ -146,10 +150,12 @@ function makeStatefulFakeIo() {
       };
       surfaces.set(surfaceRef, { paneRef, surface });
       panes.get(paneRef).surfaceRefs.add(surfaceRef);
-      return {
-        stdout: `OK ${surfaceRef} ${paneRef} ${workspaceRef}\n`,
-        stderr: "",
+      const result = {
+        surface_ref: surfaceRef,
+        pane_ref: paneRef,
+        workspace_ref: workspaceRef,
       };
+      return { stdout: `${JSON.stringify(result)}\n`, stderr: "" };
     }
     if (
       args[0] === "--id-format" &&
