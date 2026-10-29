@@ -21,9 +21,7 @@ import { EventEmitter } from "node:events";
 import {
   access,
   chmod,
-  mkdir,
   mkdtemp,
-  readdir,
   readFile,
   rm,
   stat,
