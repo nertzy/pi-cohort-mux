@@ -23,5 +23,9 @@
     "jiti": "^2.7.0",
     "markdownlint-cli2": "^0.24.0",
     "pi-cohort": "7.4.1"
+  },
+  "overrides": {
+    "katex": "^0.18.2",
+    "re2js": "^2.8.7"
   }
 }
