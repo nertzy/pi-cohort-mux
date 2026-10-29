@@ -1,21 +1,30 @@
 # pi-cohort-mux
 
-> Experimental and unreleased companion for [jjuraszek/pi-cohort](https://github.com/jjuraszek/pi-cohort).
+> Experimental companion for [jjuraszek/pi-cohort](https://github.com/jjuraszek/pi-cohort).
 
-This private workspace contains a reusable mux mechanics package
-(`pi-cohort-mux`) and thin adapters for
-[cmux](https://github.com/manaflow-ai/cmux) (`pi-cohort-mux-cmux`) and
-[herdr](https://github.com/herdrdev/herdr) (`pi-cohort-mux-herdr`), without
-duplicating Cohort orchestration. None of the packages is published yet. Pane command text and persistent environment files must never
-contain secrets.
+This workspace contains a reusable mux mechanics package (`pi-cohort-mux`) and
+thin adapters for [cmux](https://github.com/manaflow-ai/cmux)
+(`pi-cohort-mux-cmux`) and [herdr](https://github.com/herdrdev/herdr)
+(`pi-cohort-mux-herdr`), without duplicating Cohort orchestration. Pane command
+text and persistent environment files must never contain secrets.
 
 ## Installation
 
+Install `pi-cohort`, then the adapter for each multiplexer you use:
+
+```sh
+pi install npm:pi-cohort
+pi install npm:pi-cohort-mux-cmux
+pi install npm:pi-cohort-mux-herdr
+```
+
+Run `/reload` in existing sessions, or start new ones. The adapters need
+Node.js 26 or newer.
+
 Each adapter supports `pi-cohort` 7.x and peer-depends on it, so it registers
-with the host's copy instead of installing its own. Once separately published,
-install an adapter entrypoint only; each adapter declares `pi-cohort-mux` as
-its dependency. Upstream
-`pi-cohort` remains the separately activated host and owns backend selection,
+with the host's copy instead of installing its own. Install an adapter
+entrypoint only; each adapter declares `pi-cohort-mux` as its dependency.
+Upstream `pi-cohort` remains the separately activated host and owns backend selection,
 orchestration, control, reporting, and detached reload.
 
 In Pi's transcript, an adapter adds an accent badge, `[cmux]` or `[herdr]`, to a

@@ -1,8 +1,12 @@
 {
   "name": "pi-cohort-mux",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Reusable secure transport and lease mechanics for pi-cohort multiplexer adapters",
-  "private": true,
+  "keywords": [
+    "pi",
+    "pi-cohort",
+    "multiplexer"
+  ],
   "type": "module",
   "exports": {
     ".": "./src/index.js",
@@ -28,5 +32,13 @@
     }
   },
   "license": "MIT",
-  "repository": "github:nertzy/pi-cohort-mux"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nertzy/pi-cohort-mux.git",
+    "directory": "packages/pi-cohort-mux"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }
