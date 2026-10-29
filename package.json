@@ -13,7 +13,7 @@
     "test": "node --test packages/*/test/*.test.mjs test/*.test.mjs",
     "check": "npm run lint && npm test",
     "lint": "npm run lint:biome && npm run lint:markdown && actionlint .github/workflows/*.yml",
-    "lint:biome": "biome check .",
+    "lint:biome": "biome check --error-on-warnings .",
     "lint:markdown": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#tmp\" \"#.worktrees\"",
     "lint:fix": "biome check --write . && markdownlint-cli2 --fix \"**/*.md\" \"#node_modules\" \"#tmp\" \"#.worktrees\""
   },
