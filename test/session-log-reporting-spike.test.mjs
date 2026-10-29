@@ -142,6 +142,7 @@ test("Pi TUI session log reports readiness, settlement, and shutdown without net
   const socket = path.join(directory, "control.sock");
   const fifo = path.join(directory, "token.fifo");
   const runner = path.join(directory, "run-pi.sh");
+  const exitStatus = path.join(directory, "pi-exit-status");
   const serverName = `cohort-spike-${process.pid}-${Date.now()}`;
   const completionEvent = `${serverName}-pane-dead`;
   const token = `fixture-token-${crypto.randomUUID()}`;
@@ -201,7 +202,9 @@ test("Pi TUI session log reports readiness, settlement, and shutdown without net
       .join(" ");
     await writeFile(
       runner,
-      `#!/bin/sh\n${piCommand}\nstatus=$?\n${signalCompletion}\nexit $status\n`,
+      // Record Pi's status before signaling: tmux 3.4 can mark the pane dead
+      // on pty EOF before it reaps the child, leaving pane_dead_status empty.
+      `#!/bin/sh\n${piCommand}\nstatus=$?\nprintf '%s\\n' "$status" > ${quoteShell(exitStatus)}\n${signalCompletion}\nexit $status\n`,
       { mode: 0o700 },
     );
     await command(
@@ -331,12 +334,12 @@ test("Pi TUI session log reports readiness, settlement, and shutdown without net
       "-p",
       "-t",
       serverName,
-      "#{pane_dead} #{pane_dead_status} #{pane_start_command}",
+      "#{pane_start_command}",
     ]);
-    assert.match(
-      pane,
-      /^1 0 /,
-      "retained tmux pane records successful Pi exit",
+    assert.equal(
+      await readFile(exitStatus, "utf8"),
+      "0\n",
+      "Pi exits successfully after shutdown",
     );
 
     const metadata =
