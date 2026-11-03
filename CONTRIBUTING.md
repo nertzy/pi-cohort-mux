@@ -43,4 +43,5 @@ npm run check
 Lint treats Biome warnings as errors, so fix or suppress every warning.
 `npm run lint:fix` applies Biome and markdownlint fixes.
 
-The package is private. Do not publish it.
+Releases follow [RELEASING.md](RELEASING.md); a maintainer approves every
+publication.
