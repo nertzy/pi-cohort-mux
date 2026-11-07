@@ -55,6 +55,7 @@ import {
   createLease,
   environmentBootstrapPath,
   serializeEnvironment,
+  trustedChildArgs,
 } from "pi-cohort-mux";
 
 const execFile = promisify(execFileCallback);
@@ -822,7 +823,7 @@ export function createCmuxExecutionBackend({
             request.cwd,
             BOOTSTRAP_PATH,
             request.command,
-            ...request.args,
+            ...trustedChildArgs(request.args),
           ])}\n`,
           { mode: 0o600, flag: "wx" },
         );

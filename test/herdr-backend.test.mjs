@@ -158,6 +158,7 @@ test("tab launch: subscribes first, then runs the launcher argv in a new backgro
     "/usr/local/bin/child-host",
     "--session",
     "it's session.jsonl",
+    "--approve",
   ]);
 });
 

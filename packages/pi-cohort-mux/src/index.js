@@ -1,3 +1,4 @@
+export { trustedChildArgs } from "./child-args.js";
 export {
   createEnvironmentPipe,
   environmentBootstrapPath,

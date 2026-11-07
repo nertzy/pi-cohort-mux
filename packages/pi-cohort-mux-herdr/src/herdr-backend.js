@@ -50,6 +50,7 @@ import {
   createLease,
   environmentBootstrapPath,
   serializeEnvironment,
+  trustedChildArgs,
 } from "pi-cohort-mux";
 
 import { HerdrError, herdrRequest, subscribeHerdr } from "./herdr-client.js";
@@ -603,7 +604,7 @@ export function createHerdrExecutionBackend({
         request.cwd,
         environmentBootstrapPath,
         request.command,
-        ...request.args,
+        ...trustedChildArgs(request.args),
       ];
       if (placement === "split")
         typedCommand(argvFor({ directory: "/", pipePath: "/" }));

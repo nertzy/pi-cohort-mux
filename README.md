@@ -36,6 +36,12 @@ adapter that detects its mux wins. Set `pi-cohort`'s `executionBackend` to
 `cmux` or `herdr` to choose one, for example when herdr runs inside a cmux
 terminal and both detect.
 
+A child runs interactive Pi, so both adapters launch it with `--approve`: the
+parent chose the child's project, and a trust prompt in a pane would otherwise
+block the child silently (every `pi-cohort` worktree is a fresh temp directory
+with no saved trust decision). A `--approve` or `--no-approve` already in the
+request is kept.
+
 ## cmux placement
 
 Inside a cmux terminal, children open as background tabs in a helper pane of

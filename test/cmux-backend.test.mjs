@@ -516,7 +516,12 @@ test("launch: child command starts in the request cwd", async () => {
     "the launcher enters the request cwd",
   );
   assert.match(launch.bootstrap, /\/env-bootstrap\.sh$/);
-  assert.deepEqual(launch.child, ["pi", "--session", "session.jsonl"]);
+  assert.deepEqual(launch.child, [
+    "pi",
+    "--session",
+    "session.jsonl",
+    "--approve",
+  ]);
   assert.equal(launch.mode, 0o600, "the launch file is owner-only");
   assert.equal(
     await pathExists(launch.launchDir),
@@ -541,7 +546,7 @@ test("launch: the initial command names only fixed paths; the request travels in
   assert.equal(command.includes("deep"), false, "the cwd is not in it");
   assert.equal(command.includes("xxx"), false, "the args are not in it");
   assert.equal(launchFiles[0].cwd, cwd);
-  assert.deepEqual(launchFiles[0].child, ["pi", ...args]);
+  assert.deepEqual(launchFiles[0].child, ["pi", ...args, "--approve"]);
   await lease.release();
 });
 
@@ -747,7 +752,7 @@ test("launch: inherited CMUX_* identity is scrubbed from the child environment",
   await lease.release();
 });
 
-test("launch: the launch file shell-escapes command and args", async () => {
+test("launch: the launch file shell-escapes command and args, and trusts the child's project", async () => {
   const { execFile, spawn, launchFiles } = makeFakeIo();
   const backend = createCmuxBackend({ execFile, spawn });
   const request = makeRequest({
@@ -761,6 +766,7 @@ test("launch: the launch file shell-escapes command and args", async () => {
     "--session",
     "path with spaces/session.jsonl",
     "it's $HOME",
+    "--approve",
   ]);
 
   await lease.release();
