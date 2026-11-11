@@ -51,19 +51,51 @@ adapter that detects its mux wins. Set `pi-cohort`'s `executionBackend` to
 `cmux` or `herdr` to choose one, for example when herdr runs inside a cmux
 terminal and both detect.
 
-## cmux placement
+## Placement
 
-Inside a cmux terminal, children open as background tabs in a helper pane of
-the caller's workspace. cmux runs the adapter's launcher as the tab's own
-process, so nothing is typed into a shell; the child's cwd, command, and
-arguments travel in an owner-only launch file. The launcher closes a child's
-tab when the child exits, crashed or not. `pi-cohort` reports a failed child to its parent with
-the child's session file.
+Each adapter places children as background tabs by default, so a launch never
+changes your layout, and offers a split for children you want beside you.
+Choose per adapter with `PI_COHORT_MUX_CMUX_PLACEMENT` and
+`PI_COHORT_MUX_HERDR_PLACEMENT`.
 
-## herdr placement
+The default is only a starting point. Pick the placement that fits the
+subagents and tools you run most:
 
-Inside a herdr pane, children appear according to
-`PI_COHORT_MUX_HERDR_PLACEMENT`:
+- `tab` suits children you do not watch: CI and deploy watchers, a fan-out of
+  reviewers, long chains. They stay out of the way until you look for them.
+- `split` suits children you follow as they work: one implementer, or a
+  reviewer you read along with.
+
+An adapter reads its variable from the environment pi starts in, and the
+setting covers every child that pi process launches. So set it where you
+start pi: in your shell profile for a machine-wide choice, in a project's
+environment for one repository, or in a launcher when you keep different pi
+setups for different kinds of work.
+
+### cmux
+
+Inside a cmux terminal, children open as background tabs in the caller's
+workspace:
+
+- `tab` (default): each child becomes a tab in the caller's own pane, wherever
+  that tab is at the time. No pane is added, the pane keeps showing the tab it
+  showed, and focus stays where it was. When the caller's pane is not the
+  focused one, cmux selects the new tab, so the adapter selects the earlier
+  tab again and returns focus to the focused pane; focus leaves that pane for
+  an instant. Choose `split` if you would rather nothing but the child's own
+  tab were touched.
+- `split`: the first child splits a helper pane off to the right, and later
+  children become tabs in it. cmux removes the pane when its last tab closes.
+
+cmux runs the adapter's launcher as the tab's own process, so nothing is typed
+into a shell; the child's cwd, command, and arguments travel in an owner-only
+launch file. The launcher closes a child's tab when the child exits, crashed
+or not. `pi-cohort` reports a failed child to its parent with the child's
+session file.
+
+### herdr
+
+Inside a herdr pane:
 
 - `tab` (default): each child gets its own background tab in the caller's
   workspace, labeled with the agent's name. herdr runs the child directly, with

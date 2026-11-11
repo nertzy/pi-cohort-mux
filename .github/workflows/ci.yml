@@ -131,9 +131,12 @@ jobs:
           cmux ping
           cmux --version
           cmux capabilities | jq -c .capabilities
+          workspace=$(cmux --id-format uuids workspace list --json | jq -er '.workspaces[0].id')
           {
             echo "CMUX_SOCKET_PATH=$(cmux socket-status --json | jq -er .socket_path)"
-            echo "CMUX_WORKSPACE_ID=$(cmux --id-format uuids workspace list --json | jq -er '.workspaces[0].id')"
+            echo "CMUX_WORKSPACE_ID=$workspace"
+            # Stands in for the parent's own surface, which tab placement needs.
+            echo "CMUX_SURFACE_ID=$(cmux --id-format uuids list-pane-surfaces --workspace "$workspace" --json | jq -er '.surfaces[0].id')"
           } >> "$GITHUB_ENV"
       - name: Test against real cmux
         shell: bash

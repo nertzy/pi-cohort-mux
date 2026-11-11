@@ -6,6 +6,18 @@ version and release together.
 
 ## [Unreleased]
 
+### Changed
+
+- `pi-cohort-mux-cmux`: each child now runs in a background tab in the
+  caller's own pane, as herdr's children do, instead of in a helper pane split
+  off to the right. Set `PI_COHORT_MUX_CMUX_PLACEMENT=split` to keep the
+  helper pane.
+
+### Added
+
+- `pi-cohort-mux-cmux`: `PI_COHORT_MUX_CMUX_PLACEMENT` chooses where children
+  go, `tab` (default) or `split`.
+
 ## [0.1.0] - 2026-11-11
 
 ### Added
