@@ -1,5 +1,11 @@
 # pi-cohort-mux
 
+[![CI](https://github.com/nertzy/pi-cohort-mux/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nertzy/pi-cohort-mux/actions/workflows/ci.yml)
+[![pi-cohort-mux on npm](https://img.shields.io/npm/v/pi-cohort-mux?label=pi-cohort-mux)](https://www.npmjs.com/package/pi-cohort-mux)
+[![pi-cohort-mux-cmux on npm](https://img.shields.io/npm/v/pi-cohort-mux-cmux?label=pi-cohort-mux-cmux)](https://www.npmjs.com/package/pi-cohort-mux-cmux)
+[![pi-cohort-mux-herdr on npm](https://img.shields.io/npm/v/pi-cohort-mux-herdr?label=pi-cohort-mux-herdr)](https://www.npmjs.com/package/pi-cohort-mux-herdr)
+[![License: MIT](https://img.shields.io/npm/l/pi-cohort-mux)](LICENSE)
+
 > Experimental companion for [jjuraszek/pi-cohort](https://github.com/jjuraszek/pi-cohort).
 
 This workspace contains a reusable mux mechanics package (`pi-cohort-mux`) and
