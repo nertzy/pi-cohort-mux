@@ -1,0 +1,80 @@
+name: Publish to npm
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.x
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Require a matching version tag
+        run: node scripts/check-release-ref.mjs
+      - name: Require release notes
+        run: node scripts/extract-release-notes.mjs "${GITHUB_REF_NAME#v}" > /dev/null
+      - name: Require staged-publishing npm support
+        run: |
+          npm_version=$(npm --version)
+          echo "npm $npm_version"
+          node -e '
+            const [major, minor] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && minor < 15)) {
+              throw new Error("npm " + process.argv[1] + " does not support staged publishing (requires >= 11.15.0)");
+            }
+          ' "$npm_version"
+      - run: npm ci
+      - name: Install actionlint
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash) \
+            1.7.12 "$RUNNER_TEMP/actionlint"
+          echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
+      - run: npm run check
+      - run: npm run pack:check
+      # `npm stage` is unaware of workspaces, so stage each package from its
+      # own directory, the shared mechanics before the adapters that pin them.
+      - name: Stage every package
+        run: |
+          for package in pi-cohort-mux pi-cohort-mux-cmux pi-cohort-mux-herdr; do
+            (cd "packages/$package" && npm stage publish --access public --provenance)
+          done
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.x
+          package-manager-cache: false
+      - name: Create GitHub Release from the changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/extract-release-notes.mjs \
+            "${GITHUB_REF_NAME#v}" > release-notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md

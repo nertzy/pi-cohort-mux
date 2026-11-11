@@ -37,6 +37,7 @@ jobs:
             1.7.12 "$RUNNER_TEMP/actionlint"
           echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
       - run: npm run lint
+      - run: npm run pack:check
 
   test:
     name: ${{ matrix.os }} · Node ${{ matrix.node-version }} · tmux + pi

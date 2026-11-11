@@ -1,8 +1,14 @@
 {
   "name": "pi-cohort-mux-herdr",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "herdr execution adapter for pi-cohort",
-  "private": true,
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "pi-cohort",
+    "herdr"
+  ],
   "type": "module",
   "exports": {
     ".": "./src/index.js",
@@ -15,9 +21,13 @@
     "node": ">=26"
   },
   "license": "MIT",
-  "repository": "github:nertzy/pi-cohort-mux",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nertzy/pi-cohort-mux.git",
+    "directory": "packages/pi-cohort-mux-herdr"
+  },
   "dependencies": {
-    "pi-cohort-mux": "0.0.0"
+    "pi-cohort-mux": "0.1.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.85.0",
@@ -33,5 +43,9 @@
     "extensions": [
       "./src/index.js"
     ]
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
