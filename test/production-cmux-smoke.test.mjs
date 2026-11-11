@@ -38,7 +38,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 
 import { createCmuxBackend } from "../packages/pi-cohort-mux-cmux/src/cmux-backend.js";
 import { cmuxDeadline } from "./support/cmux-deadline.mjs";
@@ -583,6 +583,236 @@ test("production cmux backend: any cwd and args reach the child exactly, however
       "the surface closed when the child exited",
     );
     ownedSurface = undefined;
+  } finally {
+    await lease?.release();
+    if (ownedSurface) await backend.close({ ...lease.handle }, "cleanup");
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+/** Each pane of the caller's workspace: its focus, selected tab, and tabs. */
+async function workspaceLayout() {
+  const { stdout } = await execFile(
+    "cmux",
+    [
+      "--id-format",
+      "both",
+      "list-panes",
+      "--workspace",
+      process.env.CMUX_WORKSPACE_ID,
+      "--json",
+    ],
+    { timeout: CLI_DEADLINE_MS },
+  );
+  return JSON.parse(stdout).panes.map((pane) => ({
+    ref: pane.ref,
+    focused: pane.focused,
+    selected: pane.selected_surface_id,
+    surfaces: pane.surface_ids,
+  }));
+}
+
+/**
+ * The workspace's layout once it matches `expected`, or as it stands at the
+ * deadline. cmux lists a pane for a moment after its last tab has closed.
+ */
+async function settledLayout(expected, deadline = DISAPPEARANCE_DEADLINE_MS) {
+  const end = Date.now() + deadline;
+  while (true) {
+    const layout = await workspaceLayout();
+    if (isDeepStrictEqual(layout, expected) || Date.now() >= end) return layout;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+/**
+ * Launch one tab-placement child of `parentSurface`, a surface of the caller's
+ * workspace, and check that nothing around the child's tab changed.
+ */
+async function assertTabPlacementLeavesLayoutAlone(parentSurface) {
+  const callerSurface = process.env.CMUX_SURFACE_ID;
+  process.env.CMUX_SURFACE_ID = parentSurface;
+  const backend = createCmuxBackend({ ...BACKEND_DEADLINES, placement: "tab" });
+  const tempDir = await mkdtemp(join(tmpdir(), "pi-cohort-mux-smoke-"));
+  const done = join(tempDir, "done");
+  let lease;
+  let ownedSurface;
+  try {
+    const before = await workspaceLayout();
+    lease = await backend.launch({
+      command: "/bin/sh",
+      args: ["-c", 'while [ ! -e "$1" ]; do sleep 0.1; done', "wait", done],
+      cwd: tempDir,
+      environment: {},
+      runId: "smoke-run-tab",
+      childId: "smoke-child-tab",
+      signal: new AbortController().signal,
+    });
+    const { handle } = lease;
+    ownedSurface = {
+      workspaceRef: handle.data.workspaceRef,
+      paneRef: handle.data.paneRef,
+      surfaceRef: handle.data.surfaceRef,
+      surfaceId: handle.surface.id,
+    };
+    const after = await workspaceLayout();
+
+    const parentPane = before.find((pane) =>
+      pane.surfaces.includes(parentSurface),
+    );
+    assert.equal(
+      handle.data.paneRef,
+      parentPane.ref,
+      "the child is in the parent's own pane",
+    );
+    // Where in the pane's tab bar the new tab lands is cmux's choice.
+    assert.deepEqual(
+      after.map((pane) => ({
+        ...pane,
+        surfaces: pane.surfaces.filter((id) => id !== handle.surface.id),
+      })),
+      before,
+      "no pane was added, and every pane kept its focus, selected tab, and other tabs",
+    );
+
+    await writeFile(done, "");
+    assert.equal(
+      await verifyGone(ownedSurface),
+      true,
+      "the tab closed when the child exited",
+    );
+    ownedSurface = undefined;
+    assert.deepEqual(
+      await settledLayout(before),
+      before,
+      "the workspace is as it was",
+    );
+  } finally {
+    await lease?.release();
+    if (ownedSurface) await backend.close({ ...lease.handle }, "cleanup");
+    await rm(tempDir, { recursive: true, force: true });
+    if (callerSurface === undefined) delete process.env.CMUX_SURFACE_ID;
+    else process.env.CMUX_SURFACE_ID = callerSurface;
+  }
+}
+
+test(
+  "production cmux backend: tab placement adds an unselected tab to the parent's pane and leaves the layout alone",
+  {
+    skip:
+      skipReason ||
+      (process.env.CMUX_SURFACE_ID
+        ? false
+        : "tab placement needs CMUX_SURFACE_ID, the parent's own surface"),
+  },
+  () => assertTabPlacementLeavesLayoutAlone(process.env.CMUX_SURFACE_ID),
+);
+
+test("production cmux backend: tab placement leaves the layout alone when the parent's pane does not have the workspace's focus", {
+  skip: skipReason || false,
+}, async () => {
+  // cmux selects a tab added to an unfocused pane. The parent here is a
+  // stand-in: an owned pane split off without focus, so the caller's pane
+  // keeps the workspace's focus.
+  const before = await workspaceLayout();
+  let settled;
+  const { stdout } = await execFile(
+    "cmux",
+    [
+      "rpc",
+      "pane.create",
+      JSON.stringify({
+        workspace_id: process.env.CMUX_WORKSPACE_ID,
+        type: "terminal",
+        direction: "right",
+        focus: false,
+        initial_command: "/bin/sleep 600",
+      }),
+    ],
+    { timeout: CLI_DEADLINE_MS },
+  );
+  const standIn = JSON.parse(stdout);
+  try {
+    // cmux lists a new pane only once it has laid it out.
+    const listed = async () =>
+      (await workspaceLayout()).find((pane) => pane.ref === standIn.pane_ref);
+    const deadline = Date.now() + EVIDENCE_DEADLINE_MS;
+    while (!(await listed()) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.equal(
+      (await listed())?.focused,
+      false,
+      "the stand-in parent's pane does not have the focus",
+    );
+    await assertTabPlacementLeavesLayoutAlone(standIn.surface_id);
+  } finally {
+    await execFile(
+      "cmux",
+      [
+        "close-surface",
+        "--workspace",
+        standIn.workspace_ref,
+        "--surface",
+        standIn.surface_ref,
+        "--force",
+      ],
+      { timeout: CLI_DEADLINE_MS },
+    );
+    settled = await settledLayout(before);
+  }
+  assert.deepEqual(settled, before, "the stand-in pane is gone");
+});
+
+test("production cmux backend: split placement puts the child in a helper pane that goes when the child does", {
+  skip: skipReason || false,
+}, async () => {
+  const backend = createCmuxBackend({
+    ...BACKEND_DEADLINES,
+    placement: "split",
+  });
+  const tempDir = await mkdtemp(join(tmpdir(), "pi-cohort-mux-smoke-"));
+  const done = join(tempDir, "done");
+  let lease;
+  let ownedSurface;
+  try {
+    const before = await workspaceLayout();
+    lease = await backend.launch({
+      command: "/bin/sh",
+      args: ["-c", 'while [ ! -e "$1" ]; do sleep 0.1; done', "wait", done],
+      cwd: tempDir,
+      environment: {},
+      runId: "smoke-run-split",
+      childId: "smoke-child-split",
+      signal: new AbortController().signal,
+    });
+    const { handle } = lease;
+    ownedSurface = {
+      workspaceRef: handle.data.workspaceRef,
+      paneRef: handle.data.paneRef,
+      surfaceRef: handle.data.surfaceRef,
+      surfaceId: handle.surface.id,
+    };
+    const after = await workspaceLayout();
+
+    assert.deepEqual(
+      after.filter((pane) => pane.ref !== handle.data.paneRef),
+      before,
+      "the child's pane is a new one, and every other pane is as it was",
+    );
+
+    await writeFile(done, "");
+    assert.equal(
+      await verifyGone(ownedSurface),
+      true,
+      "the tab closed when the child exited",
+    );
+    ownedSurface = undefined;
+    assert.deepEqual(
+      await settledLayout(before),
+      before,
+      "the helper pane went with its last tab",
+    );
   } finally {
     await lease?.release();
     if (ownedSurface) await backend.close({ ...lease.handle }, "cleanup");

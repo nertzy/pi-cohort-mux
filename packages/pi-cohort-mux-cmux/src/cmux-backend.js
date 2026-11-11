@@ -3,14 +3,21 @@
  *
  * Implements the v1 execution-backend SPI:
  *   detect()          — probe cmux availability and capabilities
- *   launch(request)   — add a child surface to the parent workspace's helper pane
+ *   launch(request)   — add a child surface to the parent workspace
  *   reattach(handle)  — reconnect to an existing surface by opaque handle
  *   close(handle)     — force-close the owned surface by handle (idempotent on not_found)
  *
- * Placement mirrors the cohort bridge: children are terminal tabs in one
- * right-side helper pane inside the PARENT workspace — never new workspaces.
- * The first child creates the pane (no idle shell surface); later children
- * add surfaces to it; cmux collapses the pane when its last surface closes.
+ * Placement (PI_COHORT_MUX_CMUX_PLACEMENT, default "tab", as herdr's):
+ * children are unfocused terminal tabs inside the PARENT workspace — never
+ * new workspaces.
+ *   tab   — each child is a tab in the pane the parent's own surface
+ *           (CMUX_SURFACE_ID) is in at that moment, so the layout never
+ *           changes. The pane keeps the tab it showed and the workspace its
+ *           focused pane (see keepSelection).
+ *   split — mirrors the cohort bridge: one right-side helper pane holds the
+ *           children. The first child creates the pane (no idle shell
+ *           surface); later children add surfaces to it; cmux collapses the
+ *           pane when its last surface closes.
  *
  * Grounded in the cmux-parity spike (doc/spikes/cmux-parity.md):
  *   - Events subscription starts and acks BEFORE surface create.
@@ -62,7 +69,9 @@ const CLI_DEADLINE_MS = 10_000;
 const ACK_DEADLINE_MS = 10_000;
 const HANDOFF_DEADLINE_MS = 10_000;
 const ORPHAN_GRACE_MS = 3_000;
+const SETTLE_DEADLINE_MS = 500;
 const COOLDOWN_MS = 60_000;
+const PLACEMENTS = ["tab", "split"];
 const BOOTSTRAP_PATH = environmentBootstrapPath;
 const LAUNCHER_PATH = fileURLToPath(
   new URL("./surface-launch.sh", import.meta.url),
@@ -417,6 +426,8 @@ function translateCmuxEvent(frame, surface) {
  * @param {string} [options.cli="cmux"]        Path to the cmux binary.
  * @param {Function} [options.execFile]        Injected execFile (for testing).
  * @param {Function} [options.spawn]           Injected spawn (for testing).
+ * @param {"tab"|"split"} [options.placement] Overrides
+ *   PI_COHORT_MUX_CMUX_PLACEMENT.
  * @param {number} [options.cliDeadlineMs] Bound on each cmux CLI call. Raise
  *   it where cmux answers slowly, such as a freshly booted CI VM.
  * @param {number} [options.ackDeadlineMs] Bound on the events subscription
@@ -425,6 +436,9 @@ function translateCmuxEvent(frame, surface) {
  *   environment after the surface exists (for testing).
  * @param {number} [options.orphanGraceMs] How long an ambiguous create failure
  *   waits for a late surface to report its own id (for testing).
+ * @param {number} [options.settleDeadlineMs] How long tab placement waits for
+ *   cmux to list a child's tab before leaving the pane's selection alone (for
+ *   testing).
  * @param {number} [options.cooldownMs] How long detect() reports cmux
  *   unavailable after a create timed out (for testing).
  * @param {Function} [options.now] Clock for the cool-down (for testing).
@@ -433,15 +447,25 @@ export function createCmuxExecutionBackend({
   cli = "cmux",
   execFile: execFileFn = (...args) => execFile(...args),
   spawn: spawnFn = spawnProcess,
+  placement = process.env.PI_COHORT_MUX_CMUX_PLACEMENT || "tab",
   cliDeadlineMs = CLI_DEADLINE_MS,
   ackDeadlineMs = ACK_DEADLINE_MS,
   handoffDeadlineMs = HANDOFF_DEADLINE_MS,
   orphanGraceMs = ORPHAN_GRACE_MS,
+  settleDeadlineMs = SETTLE_DEADLINE_MS,
   cooldownMs = COOLDOWN_MS,
   now = Date.now,
 } = {}) {
   const snapshotOf = (workspaceRef, paneRef) =>
     takeSnapshot(execFileFn, cli, workspaceRef, paneRef, cliDeadlineMs);
+  const placementError = PLACEMENTS.includes(placement)
+    ? undefined
+    : `cmux placement "${placement}" is not supported; set PI_COHORT_MUX_CMUX_PLACEMENT to "tab" or "split"`;
+  // Tab placement finds the parent's pane through the parent's own surface.
+  const parentSurfaceError = () =>
+    placement === "tab" && !process.env.CMUX_SURFACE_ID
+      ? "cmux tab placement requires CMUX_SURFACE_ID, the parent's own surface"
+      : undefined;
 
   const state = {
     trace: [],
@@ -454,6 +478,8 @@ export function createCmuxExecutionBackend({
     helperPane: null,
     cooldown: null,
   };
+  // Errors thrown before cmux was asked to create anything.
+  const notCreated = new WeakSet();
 
   // A create that cmux never answered means its main thread is stalled (a
   // modal window, the app not frontmost). Report cmux unavailable for a while,
@@ -463,11 +489,12 @@ export function createCmuxExecutionBackend({
     if (!state.cooldown || now() >= state.cooldown.until) return undefined;
     return state.cooldown.reason;
   }
-  function startCooldown(error) {
+  function coolDownIfStalled(error, call) {
+    if (!isCliTimeout(error) || isAbort(error)) return;
     const seconds = Math.round(cooldownMs / 1_000);
     state.cooldown = {
       until: now() + cooldownMs,
-      reason: `cmux did not answer a create within its deadline (${error.message}); cooling down for ${seconds}s`,
+      reason: `cmux did not answer ${call} within its deadline (${error.message}); cooling down for ${seconds}s`,
     };
   }
 
@@ -493,29 +520,155 @@ export function createCmuxExecutionBackend({
     return withHelperLock(async () => {
       const cooling = coolingDownReason();
       if (cooling) throw new Error(`cmux backend is cooling down: ${cooling}`);
+      // Cool-downs start inside the lock, so launches queued behind this
+      // one see them.
+      let pane;
       try {
-        return await createSurfaceUnlocked(parentWorkspace, command, signal);
+        pane =
+          placement === "tab"
+            ? await parentPane(parentWorkspace, signal)
+            : await helperPane(parentWorkspace);
       } catch (error) {
-        // Inside the lock, so launches queued behind this one see it.
-        if (isCliTimeout(error) && !isAbort(error)) startCooldown(error);
+        notCreated.add(error);
+        coolDownIfStalled(error, "a pane lookup");
+        throw error;
+      }
+      try {
+        return await createSurfaceUnlocked(
+          parentWorkspace,
+          pane,
+          command,
+          signal,
+        );
+      } catch (error) {
+        coolDownIfStalled(error, "a create");
         throw error;
       }
     });
   }
 
-  async function createSurfaceUnlocked(parentWorkspace, command, signal) {
-    // First child creates the right-side helper pane; later children become
-    // tabs in it. The pane never holds an idle shell surface. cmux collapses
-    // a pane when its last surface closes, so verify before reuse.
-    let helper = state.helperPane;
-    if (helper) {
-      try {
-        await snapshotOf(parentWorkspace, helper.ref);
-      } catch {
-        helper = null;
-        state.helperPane = null;
+  /** The parent workspace's panes: focus, tabs in order, selected tab. */
+  async function listPanes(
+    parentWorkspace,
+    { signal, timeout = cliDeadlineMs } = {},
+  ) {
+    const { stdout } = await execFileFn(
+      cli,
+      [
+        "--id-format",
+        "both",
+        "list-panes",
+        "--workspace",
+        parentWorkspace,
+        "--json",
+      ],
+      { timeout, signal },
+    );
+    return JSON.parse(stdout).panes ?? [];
+  }
+
+  /**
+   * The pane the parent's surface is in right now. The user can drag that
+   * tab to another pane between launches, so nothing is remembered, and the
+   * focused pane is no substitute: focus may be anywhere.
+   */
+  async function parentPane(parentWorkspace, signal) {
+    const parentSurface = process.env.CMUX_SURFACE_ID;
+    const panes = await listPanes(parentWorkspace, { signal });
+    const pane = panes.find((p) => p.surface_ids?.includes(parentSurface));
+    if (!pane) {
+      throw new Error(
+        `CMUX_SURFACE_ID ${parentSurface} not found in cmux workspace ${parentWorkspace}; tab placement needs the parent's own pane`,
+      );
+    }
+    return { ref: pane.ref, shown: pane.selected_surface_id };
+  }
+
+  /**
+   * Put back the tab the parent's pane showed before a child was added to
+   * it. cmux 0.65 keeps the selected tab of the pane that has the
+   * workspace's focus, but in any other pane it selects the tab it adds,
+   * even with focus false, which would cover the parent. It has no call
+   * that only selects a tab: reordering a tab to the index it already has
+   * selects it and moves the workspace's focus to its pane, so the tab
+   * selected in the pane that has the focus is then reordered the same way.
+   * Everything but the tab the pane showed comes from one listing taken
+   * after the create: only a pane cmux left showing the child is touched,
+   * so a tab the user picked or closed, or a focus they moved, while the
+   * child was created is respected.
+   */
+  async function keepSelection(parentWorkspace, pane, childRef) {
+    // For a moment after a create, cmux can answer with a listing from
+    // before it; one that names the child is current. Launches queue behind
+    // this wait, so no listing may outlast it.
+    const deadline = Date.now() + settleDeadlineMs;
+    let panes;
+    let current;
+    for (;;) {
+      const timeout = Math.min(deadline - Date.now(), cliDeadlineMs);
+      if (timeout <= 0) return;
+      panes = await listPanes(parentWorkspace, { timeout });
+      current = panes.find((p) => p.ref === pane.ref);
+      if (current?.surface_refs?.includes(childRef)) break;
+      await sleep(25);
+    }
+    if (current.selected_surface_ref !== childRef) return;
+    if (!current.surface_ids.includes(pane.shown)) return;
+    // The Dock's pane is listed too, and always reports focus.
+    const focused = panes.find((p) => p.focused && !p.dock_scope);
+    try {
+      await selectInPlace(parentWorkspace, current, pane.shown);
+    } finally {
+      // Also after a reselect that failed: cmux may have applied it and
+      // moved the focus before its answer was lost.
+      if (focused?.selected_surface_id && focused !== current) {
+        await selectInPlace(
+          parentWorkspace,
+          focused,
+          focused.selected_surface_id,
+        );
       }
     }
+  }
+
+  /** Select a tab of a listed pane by reordering it to the index it has. */
+  async function selectInPlace(parentWorkspace, pane, surface) {
+    const index = pane.surface_ids.indexOf(surface);
+    await execFileFn(
+      cli,
+      [
+        "reorder-surface",
+        "--workspace",
+        parentWorkspace,
+        "--surface",
+        surface,
+        "--index",
+        String(index),
+        "--focus",
+        "false",
+      ],
+      { timeout: cliDeadlineMs },
+    );
+  }
+
+  /**
+   * The live helper pane, if any. The first child creates the right-side
+   * helper pane; later children become tabs in it. The pane never holds an
+   * idle shell surface. cmux collapses a pane when its last surface closes,
+   * so verify before reuse.
+   */
+  async function helperPane(parentWorkspace) {
+    if (!state.helperPane) return null;
+    try {
+      await snapshotOf(parentWorkspace, state.helperPane.ref);
+      return state.helperPane;
+    } catch {
+      state.helperPane = null;
+      return null;
+    }
+  }
+
+  async function createSurfaceUnlocked(parentWorkspace, pane, command, signal) {
     // The CLI's new-pane/new-surface --command types its text into whatever
     // shell the surface starts (initial_input); the raw v2 methods take
     // initial_command, which cmux runs as the surface's own process.
@@ -525,22 +678,29 @@ export function createCmuxExecutionBackend({
       focus: false,
       initial_command: command,
     };
-    const [method, placement] = helper
-      ? ["surface.create", { pane_id: helper.ref }]
+    const [method, target] = pane
+      ? ["surface.create", { pane_id: pane.ref }]
       : ["pane.create", { direction: "right" }];
     const createArgs = [
       "rpc",
       method,
-      JSON.stringify({ ...params, ...placement }),
+      JSON.stringify({ ...params, ...target }),
     ];
     const result = await execFileFn(cli, createArgs, {
       timeout: cliDeadlineMs,
       signal,
     });
     const refs = parseCreateRefs(result.stdout);
-    const paneRef = helper?.ref ?? refs.paneRef;
+    const paneRef = pane?.ref ?? refs.paneRef;
     // Publish the pane before unlocking so the next launch adds a tab to it.
-    if (!helper && paneRef) state.helperPane = { ref: paneRef, id: null };
+    if (!pane && paneRef) state.helperPane = { ref: paneRef, id: null };
+    // Best effort: the child is already starting, and a tab left selected
+    // is no reason to fail its launch.
+    if (placement === "tab") {
+      await keepSelection(parentWorkspace, pane, refs.surfaceRef).catch(
+        () => {},
+      );
+    }
     return { ...refs, paneRef };
   }
 
@@ -579,6 +739,9 @@ export function createCmuxExecutionBackend({
 
   /** Wait for the child to read its environment, bounded and abortable. */
   async function awaitHandoff(environmentPipe, signal) {
+    // A child that already read its environment must not outrun an abort
+    // that arrived while its tab was being placed.
+    signal?.throwIfAborted();
     if (!environmentPipe) return;
     let timer;
     let onAbort;
@@ -698,6 +861,7 @@ export function createCmuxExecutionBackend({
     name: "cmux",
     protocolVersion: 1,
     surfaceEnvironmentPrefixes: [SURFACE_ENVIRONMENT_PREFIX],
+    placement,
     state,
 
     // ── detect ─────────────────────────────────────────────────────────────
@@ -710,6 +874,13 @@ export function createCmuxExecutionBackend({
           version: "",
           capabilities: [],
           reason: cooling,
+        };
+      if (placementError)
+        return {
+          available: false,
+          version: "",
+          capabilities: [],
+          reason: placementError,
         };
       try {
         const { stdout: versionOut } = await execFileFn(cli, ["--version"], {
@@ -729,6 +900,8 @@ export function createCmuxExecutionBackend({
           Boolean(process.env.CMUX_SOCKET_PATH) &&
           capabilities.includes("events.v1");
         if (!available) return { available, version, capabilities };
+        const reason = parentSurfaceError();
+        if (reason) return { available: false, version, capabilities, reason };
         // One read-only probe: a stale or foreign CMUX_WORKSPACE_ID would
         // otherwise surface only as a failed launch.
         try {
@@ -738,6 +911,16 @@ export function createCmuxExecutionBackend({
             ? `CMUX_WORKSPACE_ID ${parentWorkspace} not found in cmux`
             : `cmux workspace probe failed: ${error.message}`;
           return { available: false, version, capabilities, reason };
+        }
+        // Likewise a stale CMUX_SURFACE_ID, or a parent tab since moved to
+        // another workspace.
+        if (placement === "tab") {
+          try {
+            await parentPane(parentWorkspace);
+          } catch (error) {
+            const reason = error.message;
+            return { available: false, version, capabilities, reason };
+          }
         }
         return { available, version, capabilities };
       } catch {
@@ -760,6 +943,8 @@ export function createCmuxExecutionBackend({
           "cmux backend requires CMUX_WORKSPACE_ID; launch outside cmux is not supported",
         );
       }
+      const unplaceable = placementError ?? parentSurfaceError();
+      if (unplaceable) throw new Error(unplaceable);
 
       const environmentPayload = serializeEnvironment(
         scrubMuxEnvironment(request.environment),
@@ -840,9 +1025,10 @@ export function createCmuxExecutionBackend({
           request.signal,
         );
       } catch (error) {
-        const reported = createOutcomeUnknown(error)
-          ? await collectOrphan(environmentPipe, parentWorkspace, error)
-          : error;
+        const reported =
+          createOutcomeUnknown(error) && !notCreated.has(error)
+            ? await collectOrphan(environmentPipe, parentWorkspace, error)
+            : error;
         await environmentPipe.cleanup();
         await subscription.stop();
         throw reported;
@@ -881,7 +1067,10 @@ export function createCmuxExecutionBackend({
         await subscription.stop();
         throw reported;
       }
-      if (state.helperPane?.ref === createRefs.paneRef || !state.helperPane) {
+      if (
+        placement === "split" &&
+        (state.helperPane?.ref === createRefs.paneRef || !state.helperPane)
+      ) {
         state.helperPane = {
           ref: snapshot.pane_ref ?? createRefs.paneRef,
           id: snapshot.pane_id,

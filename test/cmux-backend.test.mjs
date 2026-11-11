@@ -43,6 +43,9 @@ const isPaneCreate = (c) =>
   c.type === "exec" && createMethod(c.args) === "pane.create";
 const isSurfaceCreate = (c) =>
   c.type === "exec" && createMethod(c.args) === "surface.create";
+const isReorder = (c) => c.type === "exec" && c.args[0] === "reorder-surface";
+const isWorkspaceListing = (c) =>
+  c.type === "exec" && c.args[2] === "list-panes";
 
 // ─── Fake child process for the events subscription ───────────────────────────
 
@@ -88,6 +91,8 @@ const FAKE_WS_REF = "workspace:42";
 const FAKE_SF_REF = "surface:100";
 const FAKE_PN_ID = "EEDDCCBB-0000-0000-0000-777788889999";
 const FAKE_PN_REF = "pane:50";
+const FAKE_PARENT_SF_ID = "11223344-0000-0000-0000-555566667777";
+const FAKE_PARENT_PN_REF = "pane:7";
 
 /** The result `cmux rpc pane.create|surface.create` prints. */
 function fakeCreateResult() {
@@ -121,15 +126,76 @@ function fakeSnapshot() {
   };
 }
 
-// launch() requires the parent workspace identity from the environment.
-const savedParentWorkspace = process.env.CMUX_WORKSPACE_ID;
+/** One pane as `cmux list-panes` reports it; its first tab is the selected one unless told. */
+function fakePane(
+  ref,
+  surfaceIds,
+  { selected = surfaceIds[0], focused = false } = {},
+) {
+  return {
+    ref,
+    focused,
+    surface_ids: [...surfaceIds],
+    selected_surface_id: selected,
+  };
+}
+
+const fakeSurfaceRef = (id) =>
+  id === FAKE_SF_ID ? FAKE_SF_REF : `surface:${id}`;
+
+/**
+ * A pane as one `cmux list-panes` answer reports it. `before` is the pane a
+ * create just added a tab to, as it was: for a moment cmux still answers so.
+ */
+function listedPane(pane, before) {
+  const stale = before?.ref === pane.ref;
+  const surface_ids = pane.surface_ids.filter(
+    (id) => !stale || id !== FAKE_SF_ID,
+  );
+  const selected = stale ? before.selected : pane.selected_surface_id;
+  return {
+    ...pane,
+    surface_ids,
+    surface_refs: surface_ids.map(fakeSurfaceRef),
+    selected_surface_id: selected,
+    selected_surface_ref: selected && fakeSurfaceRef(selected),
+  };
+}
+
+/** cmux's Dock: listed with every workspace's panes, and always focused. */
+const fakeDockPane = () => ({
+  ...fakePane("pane:2", [], { selected: null, focused: true }),
+  dock_scope: "global",
+});
+
+// launch() requires the parent workspace identity from the environment, and
+// tab placement the parent surface's. Tests that name no placement cover what
+// both placements share, and run it through split, whatever the developer's
+// own setting; tab placement's tests name theirs.
+const PARENT_ENVIRONMENT = {
+  CMUX_WORKSPACE_ID: FAKE_WS_ID,
+  CMUX_SURFACE_ID: FAKE_PARENT_SF_ID,
+  PI_COHORT_MUX_CMUX_PLACEMENT: "split",
+};
+
+/** Set (or, for undefined, unset) process.env values; returns the undo. */
+function setEnvironment(values) {
+  const saved = Object.keys(values).map((key) => [key, process.env[key]]);
+  const apply = (entries) => {
+    for (const [key, value] of entries) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+  apply(Object.entries(values));
+  return () => apply(saved);
+}
+
+let restoreParentEnvironment;
 before(() => {
-  process.env.CMUX_WORKSPACE_ID = FAKE_WS_ID;
+  restoreParentEnvironment = setEnvironment(PARENT_ENVIRONMENT);
 });
-after(() => {
-  if (savedParentWorkspace === undefined) delete process.env.CMUX_WORKSPACE_ID;
-  else process.env.CMUX_WORKSPACE_ID = savedParentWorkspace;
-});
+after(() => restoreParentEnvironment());
 
 // ─── Fake IO builder ──────────────────────────────────────────────────────────
 
@@ -147,6 +213,15 @@ after(() => {
  *   fifoUnread       – create succeeds but the child never opens the env FIFO
  *                      (e.g. its `cd` failed), so the hand-off never completes
  *   snapshotWithoutSurface – snapshots omit the created surface
+ *   panes            – the parent workspace's panes, as `cmux list-panes`
+ *                      reports them; creates and reorders update them as cmux
+ *                      does. Default: the parent's tab alone in a focused pane
+ *   selectsNewTab    – false when cmux leaves an unfocused pane's selected
+ *                      tab alone, as it does a focused pane's
+ *   staleListings    – how many list-panes answers after a create still
+ *                      show the pane as it was before
+ *   paneLookupError  – make list-panes throw this error
+ *   reorderError     – make reorder-surface throw this error
  *   capabilities     – capabilities array returned by `cmux capabilities`
  *   version          – string returned by `cmux --version`
  */
@@ -159,6 +234,13 @@ function makeFakeIo({
   createError = null,
   fifoUnread = false,
   snapshotWithoutSurface = false,
+  panes = [
+    fakePane(FAKE_PARENT_PN_REF, [FAKE_PARENT_SF_ID], { focused: true }),
+  ],
+  selectsNewTab = true,
+  staleListings = 0,
+  paneLookupError = null,
+  reorderError = null,
   capabilities = ["events.v1"],
   version = "cmux 0.64.22",
 } = {}) {
@@ -180,6 +262,11 @@ function makeFakeIo({
     surfaceBusy: false,
     onCreate: null,
     createOutput: null,
+    panes,
+    staleListings: 0,
+    beforeCreate: null,
+    paneLookupError,
+    reorderError,
   };
 
   async function execFile(_cli, args, opts) {
@@ -190,6 +277,29 @@ function makeFakeIo({
     }
     if (args[0] === "capabilities") {
       return { stdout: `${JSON.stringify({ capabilities })}\n`, stderr: "" };
+    }
+    if (args[2] === "list-panes") {
+      if (behavior.paneLookupError) throw behavior.paneLookupError;
+      const before = behavior.staleListings-- > 0 && behavior.beforeCreate;
+      const listing = {
+        panes: behavior.panes.map((pane) => listedPane(pane, before)),
+      };
+      return { stdout: `${JSON.stringify(listing)}\n`, stderr: "" };
+    }
+    if (args[0] === "reorder-surface") {
+      if (behavior.reorderError) throw behavior.reorderError;
+      const surface = args[args.indexOf("--surface") + 1];
+      const index = Number(args[args.indexOf("--index") + 1]);
+      const pane = behavior.panes.find((p) => p.surface_ids.includes(surface));
+      // cmux 0.65 moves the tab to that index, selects it, and gives its pane
+      // the workspace's focus, whatever --focus says.
+      pane.surface_ids.splice(pane.surface_ids.indexOf(surface), 1);
+      pane.surface_ids.splice(index, 0, surface);
+      pane.selected_surface_id = surface;
+      for (const other of behavior.panes) {
+        if (!other.dock_scope) other.focused = other === pane;
+      }
+      return { stdout: "OK\n", stderr: "" };
     }
     if (createMethod(args)) {
       if (createMethod(args) === "surface.create" && behavior.paneGone) {
@@ -211,6 +321,22 @@ function makeFakeIo({
           fifoPayloads.push(await readFile(launch.fifo, "utf8"));
       }
       behavior.paneGone = false;
+      // cmux 0.65 adds a tab after the pane's selected one, and selects it
+      // unless that pane has the workspace's focus, even with focus false.
+      const pane = behavior.panes.find(
+        (p) => p.ref === createParams(args).pane_id,
+      );
+      if (pane) {
+        behavior.beforeCreate = {
+          ref: pane.ref,
+          selected: pane.selected_surface_id,
+        };
+        const shown = pane.surface_ids.indexOf(pane.selected_surface_id);
+        pane.surface_ids.splice(shown + 1, 0, FAKE_SF_ID);
+        if (!pane.focused && selectsNewTab)
+          pane.selected_surface_id = FAKE_SF_ID;
+        behavior.staleListings = staleListings;
+      }
       const stdout =
         behavior.createOutput ?? `${JSON.stringify(fakeCreateResult())}\n`;
       return { stdout, stderr: "" };
@@ -287,14 +413,12 @@ const createTimeout = () =>
   });
 
 function withSocketPath(fn) {
-  return async () => {
-    const saved = process.env.CMUX_SOCKET_PATH;
-    process.env.CMUX_SOCKET_PATH = "/tmp/cmux.sock";
+  return async (t) => {
+    const restore = setEnvironment({ CMUX_SOCKET_PATH: "/tmp/cmux.sock" });
     try {
-      await fn();
+      await fn(t);
     } finally {
-      if (saved === undefined) delete process.env.CMUX_SOCKET_PATH;
-      else process.env.CMUX_SOCKET_PATH = saved;
+      restore();
     }
   };
 }
@@ -709,6 +833,568 @@ test("launch: collapsed helper pane is recreated instead of failing", async () =
   await first.release();
   await second.release();
 });
+
+// ─── placement ────────────────────────────────────────────────────────────────
+
+test("placement: defaults to tab, as herdr's does", (t) => {
+  t.after(setEnvironment({ PI_COHORT_MUX_CMUX_PLACEMENT: undefined }));
+  const { execFile, spawn } = makeFakeIo();
+
+  assert.equal(createCmuxBackend({ execFile, spawn }).placement, "tab");
+});
+
+test("placement: PI_COHORT_MUX_CMUX_PLACEMENT selects it, and the option overrides that", (t) => {
+  t.after(setEnvironment({ PI_COHORT_MUX_CMUX_PLACEMENT: "split" }));
+  const { execFile, spawn } = makeFakeIo();
+
+  assert.equal(createCmuxBackend({ execFile, spawn }).placement, "split");
+  assert.equal(
+    createCmuxBackend({ execFile, spawn, placement: "tab" }).placement,
+    "tab",
+  );
+});
+
+test(
+  "placement: an unknown one is unavailable rather than guessed",
+  withSocketPath(async () => {
+    const { execFile, spawn, calls } = makeFakeIo();
+    const backend = createCmuxBackend({
+      execFile,
+      spawn,
+      placement: "sideways",
+    });
+
+    const detection = await backend.detect();
+    assert.equal(detection.available, false);
+    assert.match(detection.reason, /placement "sideways".*"tab" or "split"/);
+    await assert.rejects(backend.launch(makeRequest()), /placement "sideways"/);
+    assert.deepEqual(calls, [], "cmux was never asked for anything");
+  }),
+);
+
+test("launch (tab placement): each child is a background tab in the parent's own pane, with no split", async () => {
+  const { execFile, spawn, calls, behavior } = makeFakeIo();
+  const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+  const first = await backend.launch(makeRequest());
+  // The user drags the parent's tab into another pane between launches.
+  behavior.panes = [fakePane("pane:8", [FAKE_PARENT_SF_ID], { focused: true })];
+  const second = await backend.launch(makeRequest());
+
+  assert.deepEqual(calls.filter(isPaneCreate), [], "no pane is split off");
+  assert.deepEqual(
+    calls.filter(isSurfaceCreate).map((c) => {
+      const { initial_command: _, ...params } = createParams(c.args);
+      return params;
+    }),
+    [FAKE_PARENT_PN_REF, "pane:8"].map((pane_id) => ({
+      workspace_id: FAKE_WS_ID,
+      type: "terminal",
+      focus: false,
+      pane_id,
+    })),
+    "each tab lands, unfocused, in the pane the parent is in at that moment",
+  );
+  assert.deepEqual(
+    calls.filter(isReorder),
+    [],
+    "cmux left a focused pane's selected tab alone, so nothing is reselected",
+  );
+  assert.equal(backend.state.helperPane, null, "there is no helper pane");
+
+  await first.release();
+  await second.release();
+});
+
+test("launch (tab placement): a parent pane without the workspace's focus keeps its selected tab, and focus stays where it was", async () => {
+  const layout = () => [
+    fakePane(FAKE_PARENT_PN_REF, ["TAB-BEFORE", FAKE_PARENT_SF_ID], {
+      selected: FAKE_PARENT_SF_ID,
+    }),
+    fakeDockPane(),
+    fakePane("pane:9", ["OTHER-A", "OTHER-B"], {
+      selected: "OTHER-B",
+      focused: true,
+    }),
+  ];
+  const { execFile, spawn, calls, behavior } = makeFakeIo({ panes: layout() });
+  const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+  const lease = await backend.launch(makeRequest());
+
+  const [parentPane, ...others] = layout();
+  parentPane.surface_ids.push(FAKE_SF_ID);
+  assert.deepEqual(
+    behavior.panes,
+    [parentPane, ...others],
+    "only the child's tab is new: every pane kept its focus, selected tab, and tab order",
+  );
+  // cmux has no call that only selects a tab; reordering a tab to the index
+  // it already has selects it and focuses its pane.
+  assert.deepEqual(
+    calls.filter(isReorder).map((c) => c.args),
+    [
+      [FAKE_PARENT_SF_ID, "1"],
+      ["OTHER-B", "1"],
+    ].map(([surface, index]) => [
+      "reorder-surface",
+      "--workspace",
+      FAKE_WS_ID,
+      "--surface",
+      surface,
+      "--index",
+      index,
+      "--focus",
+      "false",
+    ]),
+    "the parent's tab is reselected in place, then the focused pane's tab to hand focus back",
+  );
+
+  await lease.release();
+});
+
+test("launch (tab placement): the pane keeps the tab it showed, even when that is not the parent's", async () => {
+  const { execFile, spawn, behavior } = makeFakeIo({
+    panes: [
+      fakePane(FAKE_PARENT_PN_REF, [FAKE_PARENT_SF_ID, "SHOWN"], {
+        selected: "SHOWN",
+      }),
+      fakePane("pane:9", ["OTHER"], { focused: true }),
+    ],
+  });
+  const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+  const lease = await backend.launch(makeRequest());
+
+  assert.deepEqual(
+    behavior.panes.map((pane) => [pane.selected_surface_id, pane.focused]),
+    [
+      ["SHOWN", false],
+      ["OTHER", true],
+    ],
+    "the parent's background tab is not brought forward",
+  );
+
+  await lease.release();
+});
+
+// For a moment after a create, real cmux can answer with the listing from
+// before it.
+const UNFOCUSED_PARENT_PANE = () => [
+  fakePane(FAKE_PARENT_PN_REF, [FAKE_PARENT_SF_ID]),
+  fakePane("pane:9", ["OTHER"], { focused: true }),
+];
+
+test("launch (tab placement): a listing from before the create is not taken for the pane's selection", async () => {
+  const { execFile, spawn, behavior } = makeFakeIo({
+    panes: UNFOCUSED_PARENT_PANE(),
+    staleListings: 2,
+  });
+  const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+  const lease = await backend.launch(makeRequest());
+
+  assert.deepEqual(
+    behavior.panes.map((pane) => [pane.selected_surface_id, pane.focused]),
+    [
+      [FAKE_PARENT_SF_ID, false],
+      ["OTHER", true],
+    ],
+    "the parent's tab is reselected once cmux lists the child",
+  );
+
+  await lease.release();
+});
+
+test("launch (tab placement): a pane whose selected tab cmux left alone is not reordered", async () => {
+  const { execFile, spawn, calls } = makeFakeIo({
+    panes: UNFOCUSED_PARENT_PANE(),
+    selectsNewTab: false,
+  });
+  const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+  const lease = await backend.launch(makeRequest());
+
+  assert.deepEqual(calls.filter(isReorder), []);
+
+  await lease.release();
+});
+
+test("launch (tab placement): a child cmux never lists is not waited for past the settle deadline", async () => {
+  const { execFile, spawn, calls } = makeFakeIo({
+    panes: UNFOCUSED_PARENT_PANE(),
+    staleListings: Number.POSITIVE_INFINITY,
+  });
+  const backend = createCmuxBackend({
+    execFile,
+    spawn,
+    placement: "tab",
+    settleDeadlineMs: 60,
+  });
+
+  const lease = await withinDeadline(backend.launch(makeRequest()));
+
+  assert.deepEqual(calls.filter(isReorder), []);
+  // Queued launches wait behind this one, so a listing that stalls must not
+  // outlast the wait either.
+  const waited = calls
+    .slice(calls.findIndex(isSurfaceCreate))
+    .filter(isWorkspaceListing);
+  assert.ok(waited.length > 1, "the pane was listed until the deadline");
+  assert.deepEqual(
+    waited.filter((c) => !(c.timeout <= 60)),
+    [],
+    "no listing may run longer than what is left of the settle deadline",
+  );
+
+  await lease.release();
+});
+
+test("launch (tab placement): a tab that closes in the focused pane during the create does not move that pane's tab", async () => {
+  const focusedPane = fakePane("pane:9", ["OTHER-A", "OTHER-B", "OTHER-C"], {
+    selected: "OTHER-B",
+    focused: true,
+  });
+  const { execFile, spawn, behavior } = makeFakeIo({
+    panes: [fakePane(FAKE_PARENT_PN_REF, [FAKE_PARENT_SF_ID]), focusedPane],
+  });
+  behavior.onCreate = () => {
+    focusedPane.surface_ids = ["OTHER-B", "OTHER-C"];
+  };
+  const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+  const lease = await backend.launch(makeRequest());
+
+  assert.deepEqual(behavior.panes, [
+    fakePane(FAKE_PARENT_PN_REF, [FAKE_PARENT_SF_ID, FAKE_SF_ID]),
+    fakePane("pane:9", ["OTHER-B", "OTHER-C"], { focused: true }),
+  ]);
+
+  await lease.release();
+});
+
+test("launch (tab placement): focus the user moved during the create stays where they moved it", async () => {
+  const panes = [
+    fakePane(FAKE_PARENT_PN_REF, [FAKE_PARENT_SF_ID]),
+    fakePane("pane:9", ["OTHER"], { focused: true }),
+    fakePane("pane:10", ["THIRD"]),
+  ];
+  const { execFile, spawn, behavior } = makeFakeIo({ panes });
+  behavior.onCreate = () => {
+    panes[1].focused = false;
+    panes[2].focused = true;
+  };
+  const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+  const lease = await backend.launch(makeRequest());
+
+  assert.deepEqual(
+    behavior.panes.map((pane) => [pane.selected_surface_id, pane.focused]),
+    [
+      [FAKE_PARENT_SF_ID, false],
+      ["OTHER", false],
+      ["THIRD", true],
+    ],
+  );
+
+  await lease.release();
+});
+
+test("launch (tab placement): focus that left the parent's pane just before the create does not leave the child covering it", async () => {
+  const panes = [
+    fakePane(FAKE_PARENT_PN_REF, [FAKE_PARENT_SF_ID], { focused: true }),
+    fakePane("pane:9", ["OTHER"]),
+  ];
+  const { execFile, spawn, behavior } = makeFakeIo({ panes });
+  behavior.onCreate = () => {
+    panes[0].focused = false;
+    panes[1].focused = true;
+  };
+  const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+  const lease = await backend.launch(makeRequest());
+
+  assert.deepEqual(
+    panes.map((pane) => [pane.selected_surface_id, pane.focused]),
+    [
+      [FAKE_PARENT_SF_ID, false],
+      ["OTHER", true],
+    ],
+  );
+
+  await lease.release();
+});
+
+test("launch (tab placement): a tab the user selected right after the create is left selected", async () => {
+  const panes = [
+    fakePane(FAKE_PARENT_PN_REF, [FAKE_PARENT_SF_ID, "CHOSEN"]),
+    fakePane("pane:9", ["OTHER"], { focused: true }),
+  ];
+  const io = makeFakeIo({ panes });
+  const execFile = async (cli, args, opts) => {
+    const result = await io.execFile(cli, args, opts);
+    if (createMethod(args)) panes[0].selected_surface_id = "CHOSEN";
+    return result;
+  };
+  const backend = createCmuxBackend({
+    execFile,
+    spawn: io.spawn,
+    placement: "tab",
+  });
+
+  const lease = await backend.launch(makeRequest());
+
+  assert.deepEqual(io.calls.filter(isReorder), []);
+
+  await lease.release();
+});
+
+test("launch (tab placement): focus the user moved to the parent's pane right after the create is not handed elsewhere", async () => {
+  const panes = UNFOCUSED_PARENT_PANE();
+  const io = makeFakeIo({ panes });
+  const execFile = async (cli, args, opts) => {
+    const result = await io.execFile(cli, args, opts);
+    if (createMethod(args)) {
+      panes[0].focused = true;
+      panes[1].focused = false;
+    }
+    return result;
+  };
+  const backend = createCmuxBackend({
+    execFile,
+    spawn: io.spawn,
+    placement: "tab",
+  });
+
+  const lease = await backend.launch(makeRequest());
+
+  assert.deepEqual(
+    panes.map((pane) => [pane.selected_surface_id, pane.focused]),
+    [
+      [FAKE_PARENT_SF_ID, true],
+      ["OTHER", false],
+    ],
+  );
+
+  await lease.release();
+});
+
+test("launch (tab placement): a shown tab that closed meanwhile is not asked for", async () => {
+  const parentPane = fakePane(
+    FAKE_PARENT_PN_REF,
+    [FAKE_PARENT_SF_ID, "SHOWN"],
+    {
+      selected: "SHOWN",
+    },
+  );
+  const { execFile, spawn, calls, behavior } = makeFakeIo({
+    panes: [parentPane, fakePane("pane:9", ["OTHER"], { focused: true })],
+  });
+  behavior.onCreate = () => {
+    parentPane.surface_ids = [FAKE_PARENT_SF_ID];
+    parentPane.selected_surface_id = FAKE_PARENT_SF_ID;
+  };
+  const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+  const lease = await backend.launch(makeRequest());
+
+  assert.deepEqual(calls.filter(isReorder), []);
+
+  await lease.release();
+});
+
+test("launch (tab placement): a tab cmux will not reselect does not fail the launch", async () => {
+  const { execFile, spawn, calls } = makeFakeIo({
+    panes: UNFOCUSED_PARENT_PANE(),
+    reorderError: new Error("reorder-surface failed"),
+  });
+  const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+  const lease = await backend.launch(makeRequest());
+
+  assert.equal(lease.handle.surface.id, FAKE_SF_ID);
+  assert.deepEqual(closeSurfaceCalls(calls), [], "the child keeps running");
+
+  await lease.release();
+});
+
+test("launch (tab placement): a reselect cmux applied but never answered still hands the focus back", async () => {
+  const panes = UNFOCUSED_PARENT_PANE();
+  const io = makeFakeIo({ panes });
+  let reorders = 0;
+  const execFile = async (cli, args, opts) => {
+    const result = await io.execFile(cli, args, opts);
+    if (args[0] === "reorder-surface" && reorders++ === 0) {
+      throw Object.assign(new Error("timed out"), { killed: true });
+    }
+    return result;
+  };
+  const backend = createCmuxBackend({
+    execFile,
+    spawn: io.spawn,
+    placement: "tab",
+  });
+
+  const lease = await backend.launch(makeRequest());
+
+  assert.deepEqual(
+    panes.map((pane) => [pane.selected_surface_id, pane.focused]),
+    [
+      [FAKE_PARENT_SF_ID, false],
+      ["OTHER", true],
+    ],
+  );
+
+  await lease.release();
+});
+
+test("launch (tab placement): aborting while the pane settles rolls back, though the child has its environment", async () => {
+  const io = makeFakeIo({ panes: UNFOCUSED_PARENT_PANE(), staleListings: 2 });
+  const controller = new AbortController();
+  let created = false;
+  const execFile = async (cli, args, opts) => {
+    if (created && args[2] === "list-panes") {
+      controller.abort(new Error("caller cancelled"));
+    }
+    const result = await io.execFile(cli, args, opts);
+    if (createMethod(args)) created = true;
+    return result;
+  };
+  const backend = createCmuxBackend({
+    execFile,
+    spawn: io.spawn,
+    placement: "tab",
+  });
+
+  await assert.rejects(
+    withinDeadline(backend.launch(makeRequest({ signal: controller.signal }))),
+    /caller cancelled/,
+  );
+
+  assert.equal(io.fifoPayloads.length, 1, "the child read its environment");
+  assertRolledBack(io.calls, io.children);
+});
+
+test("launch (tab placement): a parent surface in none of the workspace's panes fails the launch, creating nothing", async () => {
+  const { execFile, spawn, calls, children } = makeFakeIo({
+    panes: [fakePane("pane:8", ["SOMEONE-ELSE"], { focused: true })],
+  });
+  const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+  await assert.rejects(
+    backend.launch(makeRequest()),
+    new RegExp(`CMUX_SURFACE_ID ${FAKE_PARENT_SF_ID} .*not found`),
+  );
+
+  assert.deepEqual(
+    calls.filter((c) => c.type === "exec" && createMethod(c.args)),
+    [],
+    "nothing was created",
+  );
+  assert.ok(children[0]._exited, "events subscription process stopped");
+});
+
+// Nothing was asked of cmux yet, so there is no orphan surface to wait for.
+const PANE_LOOKUP_FAILURES = {
+  "times out": {
+    error: () =>
+      Object.assign(new Error("Command failed: cmux list-panes (timed out)"), {
+        killed: true,
+        signal: "SIGTERM",
+        code: null,
+      }),
+    rejection: /list-panes \(timed out\)/,
+    cooling: /did not answer a pane lookup within its deadline/,
+  },
+  "is aborted": {
+    error: () =>
+      Object.assign(new Error("The operation was aborted"), {
+        name: "AbortError",
+        code: "ABORT_ERR",
+      }),
+    rejection: { name: "AbortError" },
+    cooling: undefined,
+  },
+};
+for (const [outcome, failure] of Object.entries(PANE_LOOKUP_FAILURES)) {
+  test(
+    `launch (tab placement): a parent pane lookup that ${outcome} fails the launch without waiting for an orphan`,
+    withSocketPath(async () => {
+      const io = makeFakeIo({ paneLookupError: failure.error() });
+      const backend = createCmuxBackend({
+        execFile: io.execFile,
+        spawn: io.spawn,
+        placement: "tab",
+        orphanGraceMs: 60_000,
+      });
+
+      await withinDeadline(
+        assert.rejects(backend.launch(makeRequest()), failure.rejection),
+      );
+
+      assert.deepEqual(
+        io.calls.filter((c) => c.type === "exec" && createMethod(c.args)),
+        [],
+        "nothing was created",
+      );
+      io.behavior.paneLookupError = null;
+      const detection = await backend.detect();
+      if (failure.cooling) assert.match(detection.reason, failure.cooling);
+      else assert.equal(detection.available, true, "cmux is not unhealthy");
+    }),
+  );
+}
+
+test(
+  "tab placement: without CMUX_SURFACE_ID detect is unavailable with a reason and launch refuses",
+  withSocketPath(async (t) => {
+    t.after(setEnvironment({ CMUX_SURFACE_ID: undefined }));
+    const { execFile, spawn, calls } = makeFakeIo();
+    const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+    const detection = await backend.detect();
+    assert.equal(detection.available, false);
+    assert.match(detection.reason, /tab placement requires CMUX_SURFACE_ID/);
+    await assert.rejects(
+      backend.launch(makeRequest()),
+      /tab placement requires CMUX_SURFACE_ID/,
+    );
+    assert.deepEqual(
+      calls.filter((c) => c.type === "spawn"),
+      [],
+      "no subscription was started",
+    );
+  }),
+);
+
+test(
+  "tab placement: detect is unavailable, with a reason, when the parent surface is in none of the workspace's panes",
+  withSocketPath(async () => {
+    // A stale CMUX_SURFACE_ID, or the parent's tab moved to another workspace.
+    const { execFile, spawn } = makeFakeIo({
+      panes: [fakePane("pane:8", ["SOMEONE-ELSE"], { focused: true })],
+    });
+    const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+    const detection = await backend.detect();
+
+    assert.equal(detection.available, false);
+    assert.match(
+      detection.reason,
+      new RegExp(`CMUX_SURFACE_ID ${FAKE_PARENT_SF_ID} .*not found`),
+    );
+  }),
+);
+
+test(
+  "tab placement: detect is available inside a cmux surface",
+  withSocketPath(async () => {
+    const { execFile, spawn } = makeFakeIo();
+    const backend = createCmuxBackend({ execFile, spawn, placement: "tab" });
+
+    assert.equal((await backend.detect()).available, true);
+  }),
+);
 
 test("declares CMUX_* as surface-owned so attempts keep the pane's identity", () => {
   const { execFile, spawn } = makeFakeIo();

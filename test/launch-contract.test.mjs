@@ -11,8 +11,11 @@ import {
   launchOf,
 } from "./fixtures/cmux-launch.mjs";
 
-// launch() derives the parent workspace from the environment; pin it hermetically.
+// launch() derives the parent workspace and the placement from the
+// environment; pin them hermetically. The fake cmux here models split
+// placement's helper pane; test/cmux-backend.test.mjs covers tab placement.
 process.env.CMUX_WORKSPACE_ID ??= "AABBCCDD-0000-0000-0000-111122223333";
+process.env.PI_COHORT_MUX_CMUX_PLACEMENT = "split";
 
 const WORKSPACE_REF = "workspace:17";
 const WORKSPACE_ID = "AABBCCDD-0000-0000-0000-111122223333";

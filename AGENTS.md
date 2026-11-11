@@ -48,7 +48,8 @@ PI_COHORT_MUX_PRODUCTION_HERDR_SMOKE=1 node --test --test-concurrency=1 \
   environment value in a command line, argv, or a file that outlives the launch.
 - Close only cmux surfaces and workspaces, or herdr panes, that this code or
   test created, by exact ref or id. Never close, rename, or focus anything else
-  in the user's session. Experiment against an isolated herdr server
+  in the user's session, except to put back the selected tab and the focused
+  pane that a launch displaced. Experiment against an isolated herdr server
   (`XDG_CONFIG_HOME` or `HERDR_SESSION`), never the user's, and never run
   `herdr server stop` against it.
 - Do not publish packages, push tags, or merge pull requests.

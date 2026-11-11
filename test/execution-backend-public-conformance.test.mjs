@@ -67,8 +67,11 @@ class FakeEventsChild extends EventEmitter {
 
 // ─── Stateful fake IO factory ─────────────────────────────────────────────────
 
-// launch() derives the parent workspace from the environment; pin it hermetically.
+// launch() derives the parent workspace and the placement from the
+// environment; pin them hermetically. The fake cmux here models split
+// placement's helper pane; test/cmux-backend.test.mjs covers tab placement.
 process.env.CMUX_WORKSPACE_ID ??= "ws-id-parent";
+process.env.PI_COHORT_MUX_CMUX_PLACEMENT = "split";
 
 /**
  * Creates a stateful fake cmux CLI (execFile + spawn) for conformance testing.

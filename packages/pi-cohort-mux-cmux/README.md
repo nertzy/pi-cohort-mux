@@ -6,8 +6,10 @@
 
 A [cmux](https://github.com/manaflow-ai/cmux) execution adapter for
 [pi-cohort](https://github.com/jjuraszek/pi-cohort). Inside a cmux terminal,
-each `subagent` child runs in its own background tab in a helper pane of the
-caller's workspace, and its tab closes when the child exits.
+each `subagent` child runs in its own background tab in the caller's pane (or
+in a helper pane split off to the right, with
+`PI_COHORT_MUX_CMUX_PLACEMENT=split`), and its tab closes when the child
+exits.
 
 ```sh
 pi install npm:pi-cohort
