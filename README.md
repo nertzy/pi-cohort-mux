@@ -27,7 +27,7 @@ pi install npm:pi-cohort-mux-herdr
 Run `/reload` in existing sessions, or start new ones. The adapters need
 Node.js 26 or newer.
 
-Each adapter supports `pi-cohort` 7.x and peer-depends on it, so it registers
+Each adapter supports `pi-cohort` 7.x and 8.x and peer-depends on it, so it registers
 with the host's copy instead of installing its own. Install an adapter
 entrypoint only; each adapter declares `pi-cohort-mux` as its dependency.
 Upstream `pi-cohort` remains the separately activated host and owns backend selection,
@@ -49,7 +49,8 @@ registration details of their own.
 With `pi-cohort`'s default `auto` backend selection, the first registered
 adapter that detects its mux wins. Set `pi-cohort`'s `executionBackend` to
 `cmux` or `herdr` to choose one, for example when herdr runs inside a cmux
-terminal and both detect.
+terminal and both detect. Since `pi-cohort` 7.6 the setting lives under
+`subagents` in Pi's `settings.json`.
 
 ## Placement
 

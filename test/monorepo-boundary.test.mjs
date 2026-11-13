@@ -56,7 +56,7 @@ test("root is a private workspace, the packages publish, and only the adapters a
       undefined,
       "the host's pi-cohort is shared, never a private copy",
     );
-    assert.equal(adapter.peerDependencies["pi-cohort"], "^7.0.0");
+    assert.equal(adapter.peerDependencies["pi-cohort"], "^7.0.0 || ^8.0.0");
     assert.equal(
       adapter.peerDependencies["@earendil-works/pi-coding-agent"],
       ">=0.85.0",

@@ -15,7 +15,7 @@ pi install npm:pi-cohort
 pi install npm:pi-cohort-mux-herdr
 ```
 
-Needs `pi-cohort` 7.x and Node.js 26 or newer. Outside herdr the adapter
+Needs `pi-cohort` 7.x or 8.x and Node.js 26 or newer. Outside herdr the adapter
 reports itself unavailable, so `pi-cohort` falls back to its native backend.
 See the [repository README](https://github.com/nertzy/pi-cohort-mux#readme)
 for placement and backend selection.
