@@ -1,6 +1,6 @@
 #!/bin/sh
 # surface-launch: the first thing a cmux child surface runs.
-# Usage: surface-launch.sh <launch-dir> <cmux-cli>
+# Usage: surface-launch.sh <launch-dir> <cmux-cli> [<exit-dir>]
 #
 # cmux runs this script as the surface's own process. It is executable and
 # runs under its shebang, so no shell profile is read. cmux keeps the initial
@@ -27,13 +27,29 @@
 # exit this script closes its own surface (it is ours). It stays the
 # child's parent to do so: SIGINT and SIGQUIT from the surface reach the
 # child, and this script only notes them, waiting for the child to finish.
+#
+# cmux reports no process exit, only the surface closing, so before it
+# closes the surface this script writes its own exit status to
+# <exit-dir>/status, atomically via rename. The backend reads it when cmux
+# reports the surface closed: a status there is evidence the surface's
+# process exited, which a close alone (the user's, say) is not. The
+# launcher removes <exit-dir> when it releases the lease; a status written
+# after that has nowhere to go and is dropped.
 
-_sl_dir=$1 _sl_cli=$2
+_sl_dir=$1 _sl_cli=$2 _sl_exit=${3-}
 _sl_id=${CMUX_SURFACE_ID-}
 
-if [ -n "$_sl_id" ]; then
-  trap '"$_sl_cli" close-surface --surface "$_sl_id" --force >/dev/null 2>&1' EXIT
-fi
+_sl_on_exit() {
+  _sl_status=$?
+  if [ -n "$_sl_exit" ]; then
+    { printf '%s\n' "$_sl_status" > "$_sl_exit/status.tmp" && mv -f "$_sl_exit/status.tmp" "$_sl_exit/status"; } 2>/dev/null
+  fi
+  if [ -n "$_sl_id" ]; then
+    "$_sl_cli" close-surface --surface "$_sl_id" --force >/dev/null 2>&1
+  fi
+  exit "$_sl_status"
+}
+trap _sl_on_exit EXIT
 # Caught, not ignored, so the child starts with the default handlers.
 trap : INT QUIT
 

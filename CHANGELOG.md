@@ -18,6 +18,15 @@ version and release together.
 - `pi-cohort-mux-cmux`: `PI_COHORT_MUX_CMUX_PLACEMENT` chooses where children
   go, `tab` (default) or `split`.
 
+### Fixed
+
+- `pi-cohort-mux-cmux`: a child that exits is now reported as exited, not only
+  as its tab closing. `pi-cohort` waits for that report before it treats a
+  child as gone. Without it, an interrupted cmux child ended with "Process
+  termination could not be confirmed" on `pi-cohort` 7.6.5 and later, and a
+  child that was set up but never used failed to finish on 8.0 and later. A
+  tab you close yourself still reports only the close.
+
 ## [0.1.0] - 2026-11-11
 
 ### Added

@@ -632,7 +632,8 @@ test("launch: child command starts in the request cwd", async () => {
     launch.cli === "cmux" || launch.cli.startsWith("/"),
     "the surface can close itself with the same CLI",
   );
-  assert.deepEqual(launch.extra, [], "nothing else is in the initial command");
+  assert.equal(launch.extra.length, 1, "then only the exit directory");
+  assert.match(launch.extra[0], /pi-cohort-mux-cmux-exit-/);
   assert.equal(launch.fifo, join(launch.launchDir, "environment.fifo"));
   assert.equal(
     launch.cwd,
@@ -682,7 +683,11 @@ test("launch: cmux runs the launcher as the surface's own process, with nothing 
   assert.equal(params.initial_input, undefined, "nothing is typed");
   const [launcher, ...rest] = commandTokens(createCall.args);
   assert.match(launcher, /\/surface-launch\.sh$/, "the launcher runs itself");
-  assert.equal(rest.length, 2, "launch directory and CLI only");
+  assert.equal(
+    rest.length,
+    3,
+    "launch directory, CLI, and exit directory only",
+  );
   assert.equal(params.initial_command.includes(";"), false, "no `; exit`");
   await lease.release();
 });
@@ -2263,6 +2268,122 @@ test("launch: cmux workspace.closed event from subscription becomes surface_clos
   assert.equal(event.source, "mux");
 
   await lease.release();
+});
+
+// cmux reports no process exit, only the surface closing. surface-launch.sh
+// writes its exit status to the exit directory before it closes its own
+// surface, so pi-cohort, which waits for an `exited` fact before it trusts a
+// child host gone, gets one only with that evidence.
+const ownSurfaceClosed = {
+  name: "surface.closed",
+  surface_id: FAKE_SF_ID,
+  pane_id: FAKE_PN_ID,
+  workspace_id: FAKE_WS_ID,
+  type: "event",
+};
+
+async function launchThatExits({ status, frames = [ownSurfaceClosed] } = {}) {
+  const io = makeFakeIo({ eventsFrames: frames });
+  io.behavior.onCreate = async (args) => {
+    const [exitDir] = launchOf(args).extra;
+    io.exitDir = exitDir;
+    if (status !== undefined)
+      await writeFile(join(exitDir, "status"), `${status}\n`);
+  };
+  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn });
+  const lease = await backend.launch(makeRequest());
+  return { io, lease };
+}
+
+async function drain(lease) {
+  const facts = [];
+  for (;;) {
+    const next = await Promise.race([
+      lease.events.next(),
+      new Promise((resolve) => setTimeout(() => resolve(undefined), 50)),
+    ]);
+    if (!next || next.done) return facts;
+    facts.push(next.value);
+  }
+}
+
+test("launch: the surface closing after its process recorded an exit status reports exited, then surface_closed", async () => {
+  const { lease } = await launchThatExits({ status: 3 });
+
+  const facts = await drain(lease);
+  assert.deepEqual(
+    facts.map(({ type, status, signal, requested }) => ({
+      type,
+      status,
+      signal,
+      requested,
+    })),
+    [
+      { type: "exited", status: 3, signal: null, requested: undefined },
+      {
+        type: "surface_closed",
+        status: undefined,
+        signal: undefined,
+        requested: false,
+      },
+    ],
+  );
+  assert.deepEqual(facts[0].surface, lease.handle.surface);
+  assert.equal(facts[0].source, "mux");
+  await lease.release();
+});
+
+test("launch: a surface that closes with no recorded exit status reports surface_closed alone", async () => {
+  // The user closed the tab, say: the process may still be running.
+  const { lease } = await launchThatExits();
+
+  const facts = await drain(lease);
+  assert.deepEqual(
+    facts.map((fact) => fact.type),
+    ["surface_closed"],
+  );
+  await lease.release();
+});
+
+test("launch: an exit status is reported once, however many close events follow", async () => {
+  const paneClosed = {
+    name: "pane.closed",
+    pane_id: FAKE_PN_ID,
+    workspace_id: FAKE_WS_ID,
+    type: "event",
+  };
+  const { lease } = await launchThatExits({
+    status: 0,
+    frames: [ownSurfaceClosed, paneClosed],
+  });
+
+  const facts = await drain(lease);
+  assert.deepEqual(
+    facts.map((fact) => fact.type),
+    ["exited", "surface_closed", "surface_closed"],
+  );
+  assert.equal(facts[0].status, 0);
+  await lease.release();
+});
+
+test("launch: the exit directory is owner-only and goes with the lease", async () => {
+  const { io, lease } = await launchThatExits();
+
+  assert.equal((await stat(io.exitDir)).mode & 0o777, 0o700);
+  await lease.release();
+  assert.equal(await pathExists(io.exitDir), false);
+});
+
+test("launch: a launch that fails removes its exit directory", async () => {
+  const io = makeFakeIo({ createError: new Error("boom") });
+  io.behavior.onCreate = async (args) => {
+    [io.exitDir] = launchOf(args).extra;
+  };
+  const backend = createCmuxBackend({ execFile: io.execFile, spawn: io.spawn });
+
+  await assert.rejects(backend.launch(makeRequest()), /boom/);
+  assert.ok(io.exitDir);
+  assert.equal(await pathExists(io.exitDir), false);
 });
 
 test("launch: events naming a foreign surface are dropped", async () => {

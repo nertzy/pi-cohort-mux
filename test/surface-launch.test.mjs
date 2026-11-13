@@ -1,6 +1,7 @@
 /**
  * surface-launch.sh — the first thing a cmux child surface runs. No cmux
- * needed: a fake cmux CLI records the self-close call.
+ * needed: a fake cmux CLI records the self-close call, and what exit status
+ * the launcher had reported by then.
  */
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawn } from "node:child_process";
@@ -36,7 +37,9 @@ async function fixture(t) {
   const launchDir = join(root, "launch");
   const fifo = join(launchDir, "environment.fifo");
   const cwd = join(root, "work dir");
+  const exitDir = join(root, "exit");
   const cliLog = join(root, "cli.log");
+  const closeSaw = join(root, "close-saw");
   const cli = join(root, "fake-cmux");
   const ran = join(root, "ran");
   // A login /bin/sh that is dash sources $HOME/.profile; the tripwire shows
@@ -44,11 +47,15 @@ async function fixture(t) {
   const home = join(root, "home");
   const profiled = join(root, "profiled");
   await mkdir(launchDir);
+  await mkdir(exitDir);
   await mkdir(cwd);
   await mkdir(home);
   for (const profile of [".profile", ".bash_profile"])
     await writeFile(join(home, profile), `touch '${profiled}'\n`);
-  await writeFile(cli, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${cliLog}'\n`);
+  await writeFile(
+    cli,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> '${cliLog}'\ncat '${join(exitDir, "status")}' > '${closeSaw}' 2>/dev/null\n`,
+  );
   await chmod(cli, 0o755);
   await execFile("mkfifo", ["-m", "600", fifo]);
   // The child records its cwd, argv, and env so tests can tell whether it ran.
@@ -60,10 +67,12 @@ async function fixture(t) {
   const f = {
     root,
     launchDir,
+    exitDir,
     fifo,
     cwd,
     cli,
     cliLog,
+    closeSaw,
     ran,
     home,
     profiled,
@@ -90,6 +99,7 @@ function launch(
   {
     surfaceId = "SURFACE-UUID-1",
     launchDir = f.launchDir,
+    exitDir = f.exitDir,
     onSpawn = () => {},
   } = {},
 ) {
@@ -101,7 +111,7 @@ function launch(
     // with no profile, exec'd as a login command (`exec -l`). Its own process
     // group stands in for the terminal's foreground group.
     env.HOME = f.home;
-    const command = [LAUNCHER, launchDir, f.cli].map(quote).join(" ");
+    const command = [LAUNCHER, launchDir, f.cli, exitDir].map(quote).join(" ");
     const proc = spawn(
       "/bin/bash",
       ["--noprofile", "--norc", "-c", `exec -l ${command}`],
@@ -172,6 +182,57 @@ test("surface-launch: a failing child's status passes through and its surface st
   const { code } = await launch(f);
 
   assert.equal(code, 3);
+  assert.equal(
+    await readFile(f.cliLog, "utf8"),
+    "close-surface --surface SURFACE-UUID-1 --force\n",
+  );
+});
+
+test("surface-launch: records its exit status in the exit directory before it closes its surface", async (t) => {
+  const f = await fixture(t);
+  await writeLaunchFile(f, { child: ["/bin/sh", "-c", "exit 3"] });
+  const writer = spawn("/usr/bin/tee", [f.fifo], {
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  t.after(() => writer.kill("SIGKILL"));
+  writer.stdin.end("");
+
+  const { code } = await launch(f);
+
+  assert.equal(code, 3);
+  assert.equal(await readFile(join(f.exitDir, "status"), "utf8"), "3\n");
+  assert.equal(
+    await readFile(f.closeSaw, "utf8"),
+    "3\n",
+    "the status is in place when cmux reports the surface closed",
+  );
+});
+
+test("surface-launch: an abandoned launch still records its status", async (t) => {
+  const f = await fixture(t);
+  await rm(f.fifo);
+
+  const { code } = await launch(f);
+
+  assert.equal(code, 70);
+  assert.equal(await readFile(join(f.exitDir, "status"), "utf8"), "70\n");
+});
+
+test("surface-launch: a missing exit directory (lease already released) still closes its surface", async (t) => {
+  const f = await fixture(t);
+  await writeLaunchFile(f, { child: ["/bin/sh", "-c", "exit 3"] });
+  const writer = spawn("/usr/bin/tee", [f.fifo], {
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  t.after(() => writer.kill("SIGKILL"));
+  writer.stdin.end("");
+
+  const { code, stderr } = await launch(f, {
+    exitDir: join(f.root, "released"),
+  });
+
+  assert.equal(code, 3);
+  assert.equal(stderr, "");
   assert.equal(
     await readFile(f.cliLog, "utf8"),
     "close-surface --surface SURFACE-UUID-1 --force\n",
