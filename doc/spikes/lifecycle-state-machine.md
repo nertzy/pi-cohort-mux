@@ -10,12 +10,12 @@ clock, sleep, polling, terminal scraping, or process control.
 Every input is retained with its originating boundary rather than being inferred
 from a neighboring fact:
 
-| Source | Inputs |
-| --- | --- |
-| mux | `surface_created`, `surface_closed { requested }`, `exited { status, signal }`, `backend_disconnected`, `no_observed_activity` |
-| child control | `ready`, `settled`, `interrupt_ack`, `shutdown_ack` |
-| session log | `progress`, `result` |
-| parent intent | `interrupt`, `shutdown_after_delivery`, `explicit_close` |
+| Source        | Inputs                                                                                                                         |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| mux           | `surface_created`, `surface_closed { requested }`, `exited { status, signal }`, `backend_disconnected`, `no_observed_activity` |
+| child control | `ready`, `settled`, `interrupt_ack`, `shutdown_ack`                                                                            |
+| session log   | `progress`, `result`                                                                                                           |
+| parent intent | `interrupt`, `shutdown_after_delivery`, `explicit_close`                                                                       |
 
 `surface_created` is only mux-object existence, never readiness. `exited` is
 authoritative only when it contains the observed status and signal. A mux

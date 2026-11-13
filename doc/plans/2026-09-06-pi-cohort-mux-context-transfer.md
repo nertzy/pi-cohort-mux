@@ -352,13 +352,13 @@ migration history in this transfer document.
 
 ### Ownership and result source
 
-| Concern | Owner |
-| --- | --- |
-| reporting extension via `runtimeExtensions` | pi-cohort core |
+| Concern                                                         | Owner          |
+| --------------------------------------------------------------- | -------------- |
+| reporting extension via `runtimeExtensions`                     | pi-cohort core |
 | session-log parse/replay, result construction, durable delivery | pi-cohort core |
-| ready/abort/shutdown control channel (no steer, no rebound) | pi-cohort core |
-| surface launch and mux lifecycle | pi-cohort-mux |
-| reattach metadata and close/retain cleanup | pi-cohort-mux |
+| ready/abort/shutdown control channel (no steer, no rebound)     | pi-cohort core |
+| surface launch and mux lifecycle                                | pi-cohort-mux  |
+| reattach metadata and close/retain cleanup                      | pi-cohort-mux  |
 
 The companion never interprets Pi session entries or manufactures Cohort results.
 It does not own control semantics. Core injects the reporting extension before
