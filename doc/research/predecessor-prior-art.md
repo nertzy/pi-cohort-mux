@@ -11,12 +11,12 @@ constraints; it does **not** represent any predecessor as a drop-in execution ba
 than merely a renamed install alias. The Cohort history retains the predecessor
 commits and then explicitly records the split:
 
-| Cohort commit | Evidence |
-| --- | --- |
+| Cohort commit                                                                | Evidence                                                                    |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | [`102f9455eaf7`](https://github.com/jjuraszek/pi-cohort/commit/102f9455eaf7) | “Discover agents/chains flat with explicit precedence; set up fork release” |
-| [`1cc337117b2c`](https://github.com/jjuraszek/pi-cohort/commit/1cc337117b2c) | “Switch to standalone semver release model (drop upstream tracking)” |
-| [`0e74d3c05398`](https://github.com/jjuraszek/pi-cohort/commit/0e74d3c05398) | “Rename pi-subagents -> pi-cohort” |
-| [`4d781741f851`](https://github.com/jjuraszek/pi-cohort/commit/4d781741f851) | completes the Cohort rename across commands, config, and status keys |
+| [`1cc337117b2c`](https://github.com/jjuraszek/pi-cohort/commit/1cc337117b2c) | “Switch to standalone semver release model (drop upstream tracking)”        |
+| [`0e74d3c05398`](https://github.com/jjuraszek/pi-cohort/commit/0e74d3c05398) | “Rename pi-subagents -> pi-cohort”                                          |
+| [`4d781741f851`](https://github.com/jjuraszek/pi-cohort/commit/4d781741f851) | completes the Cohort rename across commands, config, and status keys        |
 
 The repository itself describes Cohort as an “async subagent delegation” Pi
 extension: <https://github.com/jjuraszek/pi-cohort>. Therefore the mux work
@@ -29,36 +29,36 @@ The following merged `nicobailon/pi-subagents` PRs form a useful sequence of
 Herdr-pane work. They are **project panes and inspection surfaces**, not a
 portable general-purpose child execution backend.
 
-| PR | What the evidence establishes |
-| --- | --- |
-| [#730](https://github.com/nicobailon/pi-subagents/pull/730) | Reports async state to a Herdr pane, restores status after resume, and bridges `needs_attention`; it is a status bridge. |
-| [#735](https://github.com/nicobailon/pi-subagents/pull/735) | Adds `project.open`, `project.status`, and `project.close`, persists bindings in a project `.pi-subagents/project-panes/herdr.json`, and starts Pi in the target project. |
-| [#921](https://github.com/nicobailon/pi-subagents/pull/921) | Makes quoted Node invocations valid in Windows PowerShell for both inspector and project-pane commands. |
-| [#949](https://github.com/nicobailon/pi-subagents/pull/949) | Publishes a versioned extension-to-extension project-pane lifecycle API with structured results, ownership-aware idle closing, and explicit human trust verification. |
-| [#1092](https://github.com/nicobailon/pi-subagents/pull/1092) | Extracts shell-command formatting so pane commands work in POSIX shells, Fish, Nushell, and PowerShell. |
-| [#1232](https://github.com/nicobailon/pi-subagents/pull/1232) | Makes unattended inspector/project-pane opens `--no-focus` by default while retaining explicit focus. |
-| [#1366](https://github.com/nicobailon/pi-subagents/pull/1366) | Adds pane/view snapshots to status surfaces, pane-safe focus/close controls, and documents authority between run, project pane, and view. |
+| PR                                                            | What the evidence establishes                                                                                                                                             |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [#730](https://github.com/nicobailon/pi-subagents/pull/730)   | Reports async state to a Herdr pane, restores status after resume, and bridges `needs_attention`; it is a status bridge.                                                  |
+| [#735](https://github.com/nicobailon/pi-subagents/pull/735)   | Adds `project.open`, `project.status`, and `project.close`, persists bindings in a project `.pi-subagents/project-panes/herdr.json`, and starts Pi in the target project. |
+| [#921](https://github.com/nicobailon/pi-subagents/pull/921)   | Makes quoted Node invocations valid in Windows PowerShell for both inspector and project-pane commands.                                                                   |
+| [#949](https://github.com/nicobailon/pi-subagents/pull/949)   | Publishes a versioned extension-to-extension project-pane lifecycle API with structured results, ownership-aware idle closing, and explicit human trust verification.     |
+| [#1092](https://github.com/nicobailon/pi-subagents/pull/1092) | Extracts shell-command formatting so pane commands work in POSIX shells, Fish, Nushell, and PowerShell.                                                                   |
+| [#1232](https://github.com/nicobailon/pi-subagents/pull/1232) | Makes unattended inspector/project-pane opens `--no-focus` by default while retaining explicit focus.                                                                     |
+| [#1366](https://github.com/nicobailon/pi-subagents/pull/1366) | Adds pane/view snapshots to status surfaces, pane-safe focus/close controls, and documents authority between run, project pane, and view.                                 |
 
 ### What current source actually provides
 
 At inspected predecessor revision
 [`45a405a389d56a65895ba6866cdcd41dd1d5683c`](https://github.com/nicobailon/pi-subagents/tree/45a405a389d56a65895ba6866cdcd41dd1d5683c):
 
-* [`src/api/project-panes.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/api/project-panes.ts)
+- [`src/api/project-panes.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/api/project-panes.ts)
   is a deliberately public re-export boundary. It exports
   `PROJECT_PANES_API_VERSION`, `createProjectPaneManager`, lifecycle functions,
   typed results, and error types; its header tells extensions not to import
   `src/inspectors/herdr/*` directly.
-* [`src/inspectors/herdr/project-panes.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/inspectors/herdr/project-panes.ts)
+- [`src/inspectors/herdr/project-panes.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/inspectors/herdr/project-panes.ts)
   defines `PROJECT_PANES_API_VERSION = 1`, structured discriminated results,
   a persisted local binding, `human-verification-required` trust, and
   ownership/idle checks. This is a lifecycle adapter around Herdr, not an
   abstract scheduler.
-* [`docs/extension-api.md#project-panes`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/docs/extension-api.md#project-panes)
+- [`docs/extension-api.md#project-panes`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/docs/extension-api.md#project-panes)
   says the target project pane runs a **separate Pi session**. The parent keeps
   coordination authority but does not own/control that peer's subagents, and
   existing headless runs are not moved into the pane.
-* [`src/inspectors/herdr/inspector-runner.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/inspectors/herdr/inspector-runner.ts)
+- [`src/inspectors/herdr/inspector-runner.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/inspectors/herdr/inspector-runner.ts)
   calls an inspector “a raw dashboard pane, not the child session and not a
   literal attach”; it reads lifecycle artifacts and forwards `steer`/`stop`
   through the existing control inbox. Closing it does not stop the run. This
@@ -66,12 +66,12 @@ At inspected predecessor revision
 
 The predecessor also demonstrates safe extension integration mechanics:
 
-* [`src/api/background-work.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/api/background-work.ts)
+- [`src/api/background-work.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/api/background-work.ts)
   uses `Symbol.for("pi-subagents.background-work.v1")` on `globalThis`, stores
   a `version`, validates the registry shape, and rejects unsupported versions.
-* [`src/api/external-runs.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/api/external-runs.ts)
+- [`src/api/external-runs.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/api/external-runs.ts)
   follows the same pattern with `Symbol.for("pi-subagents.external-runs.v2")`.
-* [`src/workflows/workflow-resources.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/workflows/workflow-resources.ts)
+- [`src/workflows/workflow-resources.ts`](https://github.com/nicobailon/pi-subagents/blob/45a405a389d56a65895ba6866cdcd41dd1d5683c/src/workflows/workflow-resources.ts)
   adds session-scoped registration and disposal to its versioned global registry.
 
 Those are patterns to reuse: a small versioned public boundary, validation at
@@ -84,12 +84,12 @@ orchestration semantics.
 At inspected [`tpope/vim-dispatch` revision
 `a2ff28abdb2d89725192db5b8562977d392a4d3f`](https://github.com/tpope/vim-dispatch/tree/a2ff28abdb2d89725192db5b8562977d392a4d3f):
 
-* [`plugin/dispatch.vim`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/plugin/dispatch.vim#L84-L97)
+- [`plugin/dispatch.vim`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/plugin/dispatch.vim#L84-L97)
   defines an explicit ordered handler list.
-* [`autoload/dispatch.vim`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/autoload/dispatch.vim#L408-L421)
+- [`autoload/dispatch.vim`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/autoload/dispatch.vim#L408-L421)
   tries that list in order and stops at the first handler that claims the
   request.
-* [`autoload/dispatch/tmux.vim`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/autoload/dispatch/tmux.vim#L1-L50)
+- [`autoload/dispatch/tmux.vim`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/autoload/dispatch/tmux.vim#L1-L50)
   keeps tmux command construction inside the tmux handler rather than the core
   dispatcher.
 
@@ -109,13 +109,13 @@ evidence, and adapters remain limited to transport and mux lifecycle facts.
 Three public descendants independently confirm demand for visible interactive
 children, while differing materially in architecture:
 
-* [`HazAT/pi-interactive-subagents`](https://github.com/HazAT/pi-interactive-subagents)
+- [`HazAT/pi-interactive-subagents`](https://github.com/HazAT/pi-interactive-subagents)
   describes itself as interactive Pi subagents in cmux terminals and documents
   focus-independent child-surface command delivery.
-* [`edxeth/pi-subagents`](https://github.com/edxeth/pi-subagents) explicitly
+- [`edxeth/pi-subagents`](https://github.com/edxeth/pi-subagents) explicitly
   states that it began as a fork of HazAT and supports interactive children in
   Herdr, cmux, tmux, Zellij, and WezTerm alongside headless children.
-* [`amosblomqvist/pi-interactive-subagents`](https://github.com/amosblomqvist/pi-interactive-subagents)
+- [`amosblomqvist/pi-interactive-subagents`](https://github.com/amosblomqvist/pi-interactive-subagents)
   identifies itself as a HazAT fork and attributes the multi-multiplexer
   surface layer and status widget to that origin.
 
@@ -130,10 +130,10 @@ The inspected edxeth revision
 [`9fac527abe414fae2750ccd7c3a92898aa266c17`](https://github.com/edxeth/pi-subagents/tree/9fac527abe414fae2750ccd7c3a92898aa266c17)
 uses a one-shot but persistent-on-disk environment capsule:
 
-* [`src/launch/env-capsule.ts`](https://github.com/edxeth/pi-subagents/blob/9fac527abe414fae2750ccd7c3a92898aa266c17/src/launch/env-capsule.ts)
+- [`src/launch/env-capsule.ts`](https://github.com/edxeth/pi-subagents/blob/9fac527abe414fae2750ccd7c3a92898aa266c17/src/launch/env-capsule.ts)
   serializes `parentEnv` and overrides as JSON to `capsule.json` in a private
   temp directory (mode `0600`), retaining unconsumed capsules up to one hour.
-* [`src/launch/run-child.mjs`](https://github.com/edxeth/pi-subagents/blob/9fac527abe414fae2750ccd7c3a92898aa266c17/src/launch/run-child.mjs)
+- [`src/launch/run-child.mjs`](https://github.com/edxeth/pi-subagents/blob/9fac527abe414fae2750ccd7c3a92898aa266c17/src/launch/run-child.mjs)
   reads that file, unlinks it, then spawns the child with the merged environment.
 
 Its permissions and cleanup are thoughtful, but the capsule contains parent

@@ -29,18 +29,28 @@ sleep or poll loop is used. Observed ack frame shape:
 ```jsonc
 {
   "boot_id": "3148CDEF-7428-4382-8A8B-5260F7901996",
-  "filters": { "categories": [], "names": ["surface.created", "workspace.created"] },
+  "filters": {
+    "categories": [],
+    "names": ["surface.created", "workspace.created"]
+  },
   "heartbeat_interval_seconds": 15,
   "protocol": "cmux-events",
   "replay_count": 0,
-  "resume": { "after_seq": null, "gap": false, "latest_seq": 702958, "next_seq": 702959, "oldest_seq": 698863, "requested_after_seq": 702958 },
+  "resume": {
+    "after_seq": null,
+    "gap": false,
+    "latest_seq": 702958,
+    "next_seq": 702959,
+    "oldest_seq": 698863,
+    "requested_after_seq": 702958
+  },
   "subscription_id": "2A3C5BF0-4038-436F-B303-9D57BDD3E4E5",
   "type": "ack",
   "version": 1
 }
 ```
 
-The test starts this subscription and awaits its `ack` promise *before*
+The test starts this subscription and awaits its `ack` promise _before_
 launching the disposable workspace, so no create event can be missed.
 
 ### 2. `--focus false` genuinely does not steal focus
@@ -70,10 +80,22 @@ finds the same surface by UUID:
 
 ```jsonc
 {
-  "pane_id": "1BABD28C-...", "pane_ref": "pane:951",
-  "surfaces": [{ "id": "950457B5-...", "ref": "surface:2506", "title": "cmux-parity-probe5", "type": "terminal", "selected": true, "index": 0 }],
-  "window_id": "C6C39367-...", "window_ref": "window:1",
-  "workspace_id": "E4CBA8EB-...", "workspace_ref": "workspace:107"
+  "pane_id": "1BABD28C-...",
+  "pane_ref": "pane:951",
+  "surfaces": [
+    {
+      "id": "950457B5-...",
+      "ref": "surface:2506",
+      "title": "cmux-parity-probe5",
+      "type": "terminal",
+      "selected": true,
+      "index": 0
+    }
+  ],
+  "window_id": "C6C39367-...",
+  "window_ref": "window:1",
+  "workspace_id": "E4CBA8EB-...",
+  "workspace_ref": "workspace:107"
 }
 ```
 
