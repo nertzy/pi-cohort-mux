@@ -27,6 +27,11 @@
  *   - close() maps only not-found errors to idempotent absence; other errors propagate.
  *   - reattach() maps not-found errors to { status: "gone" }; other errors to "unknown".
  *   - release() stops the subscription without closing the surface.
+ *   - cmux reports a surface closing, never its process exiting. The launcher
+ *     records its exit status in an owner-only exit directory before it closes
+ *     its own surface, and a close event for the surface with that status
+ *     recorded is reported as `exited` before `surface_closed`. A close with
+ *     no status (the user closed the tab, say) is not exit evidence.
  *   - No screen scraping, send-keys, focus stealing, or intercom env vars.
  *   - Inherited CMUX_* env vars are scrubbed from the child environment so the
  *     new surface's own identity (set by cmux) always wins.
@@ -50,8 +55,9 @@ import {
   execFile as execFileCallback,
   spawn as spawnProcess,
 } from "node:child_process";
-import { constants as fsConstants } from "node:fs";
-import { access, readFile, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants, readFileSync } from "node:fs";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -77,6 +83,8 @@ const LAUNCHER_PATH = fileURLToPath(
   new URL("./surface-launch.sh", import.meta.url),
 );
 const LAUNCH_FILE = "launch.sh";
+/** Where surface-launch.sh records its exit status, in the exit directory. */
+const EXIT_STATUS_FILE = "status";
 
 // ─── Shell-safe command building ──────────────────────────────────────────────
 
@@ -415,6 +423,19 @@ function translateCmuxEvent(frame, surface) {
     timestamp,
     surface,
   };
+}
+
+/**
+ * The exit status surface-launch.sh recorded in exitDir before it closed its
+ * surface, or undefined when it recorded none.
+ */
+function recordedExitStatus(exitDir) {
+  try {
+    const text = readFileSync(join(exitDir, EXIT_STATUS_FILE), "utf8").trim();
+    return /^\d+$/.test(text) ? Number(text) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ─── Public factory ───────────────────────────────────────────────────────────
@@ -973,12 +994,19 @@ export function createCmuxExecutionBackend({
       }
       state.trace.push("start");
 
+      // The exit directory outlives the hand-off, for the launcher's exit
+      // status, and goes with the lease.
+      let exitDir;
+      const removeExitDir = () =>
+        exitDir && rm(exitDir, { recursive: true, force: true });
       let environmentPipe;
       try {
+        exitDir = await mkdtemp(join(tmpdir(), "pi-cohort-mux-cmux-exit-"));
         environmentPipe = await createEnvironmentPipe(environmentPayload, {
           always: true,
         });
       } catch (error) {
+        await removeExitDir();
         await subscription.stop();
         throw error;
       }
@@ -990,7 +1018,8 @@ export function createCmuxExecutionBackend({
       // tab behind, and pi-cohort reports the failure to the parent. The
       // command names only fixed paths, since cmux keeps it in its surface
       // records; the request itself (cwd, command, args) goes in an
-      // owner-only launch file beside the FIFO, quoted for /bin/sh.
+      // owner-only launch file beside the FIFO, quoted for /bin/sh. The
+      // launcher records its exit status in the exit directory.
       // surface-launch.sh reports the surface's own id, refuses an abandoned
       // launch, enters the cwd, and runs env-bootstrap.sh, which reads the
       // environment from the FIFO. Neither the command nor the file carries
@@ -1000,6 +1029,7 @@ export function createCmuxExecutionBackend({
         command = buildCommand(LAUNCHER_PATH, [
           environmentPipe.directory,
           await resolveExecutable(cli),
+          exitDir,
         ]);
         await writeFile(
           join(environmentPipe.directory, LAUNCH_FILE),
@@ -1013,6 +1043,7 @@ export function createCmuxExecutionBackend({
         );
       } catch (error) {
         await environmentPipe.cleanup();
+        await removeExitDir();
         await subscription.stop();
         throw error;
       }
@@ -1030,6 +1061,7 @@ export function createCmuxExecutionBackend({
             ? await collectOrphan(environmentPipe, parentWorkspace, error)
             : error;
         await environmentPipe.cleanup();
+        await removeExitDir();
         await subscription.stop();
         throw reported;
       }
@@ -1064,6 +1096,7 @@ export function createCmuxExecutionBackend({
         if (!snapshotSurface) throw closedEarly();
       } catch (error) {
         const reported = await rollbackSurface(createRefs, error);
+        await removeExitDir();
         await subscription.stop();
         throw reported;
       }
@@ -1109,6 +1142,7 @@ export function createCmuxExecutionBackend({
         workspaceId: snapshot.workspace_id,
       };
       const eventQueue = createEventQueue();
+      let exitReported = false;
 
       // Wire subscription frames to the lease queue, dropping anything that
       // does not name this lease's surface/pane/workspace — children share the
@@ -1123,7 +1157,22 @@ export function createCmuxExecutionBackend({
             surface: handle.surface,
           });
         } else if (frame && ownsFrame(frame, owned)) {
-          eventQueue.push(translateCmuxEvent(frame, handle.surface));
+          const fact = translateCmuxEvent(frame, handle.surface);
+          if (fact.type === "surface_closed" && !exitReported) {
+            const status = recordedExitStatus(exitDir);
+            if (status !== undefined) {
+              exitReported = true;
+              eventQueue.push({
+                type: "exited",
+                status,
+                signal: null,
+                source: "mux",
+                timestamp: fact.timestamp,
+                surface: handle.surface,
+              });
+            }
+          }
+          eventQueue.push(fact);
         }
       });
 
@@ -1147,6 +1196,7 @@ export function createCmuxExecutionBackend({
           state.releaseCount += 1;
           subscription.removeListener?.();
           await subscription.stop();
+          await removeExitDir();
         },
       });
     },

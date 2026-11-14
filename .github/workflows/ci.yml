@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PI_VERSION: 1.3.0
+  PI_VERSION: 1.5.2
   CMUX_VERSION: 0.65.2
   HERDR_VERSION: 0.9.5
 

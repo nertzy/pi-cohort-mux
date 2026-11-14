@@ -20,7 +20,7 @@
     "node": ">=26"
   },
   "peerDependencies": {
-    "pi-cohort": "^7.0.0",
+    "pi-cohort": "^7.0.0 || ^8.0.0",
     "@earendil-works/pi-tui": "*"
   },
   "peerDependenciesMeta": {

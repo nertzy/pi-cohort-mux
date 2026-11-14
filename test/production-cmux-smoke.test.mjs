@@ -497,15 +497,25 @@ test("production cmux backend: a child that exits takes its surface with it", {
     };
     await writeFile(crash, "");
 
-    const fact = await Promise.race([
-      lease.events.next().then(({ value }) => value),
-      new Promise((_, reject) =>
-        setTimeout(
-          () => reject(new Error("no surface_closed fact")),
-          DISAPPEARANCE_DEADLINE_MS,
-        ).unref(),
-      ),
-    ]);
+    const nextFact = (expected) =>
+      Promise.race([
+        lease.events.next().then(({ value }) => value),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`no ${expected} fact`)),
+            DISAPPEARANCE_DEADLINE_MS,
+          ).unref(),
+        ),
+      ]);
+    // pi-cohort trusts a child host gone only on an exited fact.
+    const exited = await nextFact("exited");
+    assert.deepEqual(
+      [exited.type, exited.status, exited.signal],
+      ["exited", 3, null],
+      "the launcher's recorded exit status",
+    );
+    assert.deepEqual(exited.surface, handle.surface);
+    const fact = await nextFact("surface_closed");
     assert.equal(fact.type, "surface_closed");
     assert.equal(fact.requested, false, "nobody asked cmux to close it");
     assert.equal(
