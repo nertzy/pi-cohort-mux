@@ -6,11 +6,12 @@ version and release together.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-13
+
 ### Changed
 
 - Both adapters support `pi-cohort` 8 as well as 7: their peer range is now
   `^7.0.0 || ^8.0.0`.
-
 - `pi-cohort-mux-cmux`: each child now runs in a background tab in the
   caller's own pane, as herdr's children do, instead of in a helper pane split
   off to the right. Set `PI_COHORT_MUX_CMUX_PLACEMENT=split` to keep the
