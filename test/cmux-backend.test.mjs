@@ -38,6 +38,11 @@ import {
   createParams,
   launchOf,
 } from "./fixtures/cmux-launch.mjs";
+import {
+  answerOwnershipCall,
+  CMUX_SURFACE_ANCESTORS,
+  FAKE_CMUX_APP,
+} from "./fixtures/cmux-ownership.mjs";
 
 const isPaneCreate = (c) =>
   c.type === "exec" && createMethod(c.args) === "pane.create";
@@ -171,11 +176,13 @@ const fakeDockPane = () => ({
 // launch() requires the parent workspace identity from the environment, and
 // tab placement the parent surface's. Tests that name no placement cover what
 // both placements share, and run it through split, whatever the developer's
-// own setting; tab placement's tests name theirs.
+// own setting; tab placement's tests name theirs. The developer's own trust
+// setting (tmux inside cmux) is cleared too, so detection is proven here.
 const PARENT_ENVIRONMENT = {
   CMUX_WORKSPACE_ID: FAKE_WS_ID,
   CMUX_SURFACE_ID: FAKE_PARENT_SF_ID,
   PI_COHORT_MUX_CMUX_PLACEMENT: "split",
+  PI_COHORT_MUX_CMUX_TRUST_ENV: undefined,
 };
 
 /** Set (or, for undefined, unset) process.env values; returns the undo. */
@@ -224,6 +231,12 @@ after(() => restoreParentEnvironment());
  *   reorderError     – make reorder-surface throw this error
  *   capabilities     – capabilities array returned by `cmux capabilities`
  *   version          – string returned by `cmux --version`
+ *   ancestorCommands – the commands `ps` reports for this process's
+ *                      ancestors, nearest first. Default: a cmux surface's
+ *   identify         – what `cmux identify` answers. Default: the cmux app's
+ *                      executable
+ *   identifyError    – make `cmux identify` throw this error
+ *   psError          – make `ps` throw this error
  */
 function makeFakeIo({
   eventsFrames = [],
@@ -243,6 +256,10 @@ function makeFakeIo({
   reorderError = null,
   capabilities = ["events.v1"],
   version = "cmux 0.64.22",
+  ancestorCommands = CMUX_SURFACE_ANCESTORS,
+  identify = undefined,
+  identifyError = null,
+  psError = null,
 } = {}) {
   const calls = [];
   const fifoPayloads = [];
@@ -269,8 +286,16 @@ function makeFakeIo({
     reorderError,
   };
 
-  async function execFile(_cli, args, opts) {
-    calls.push({ type: "exec", args: [...args], timeout: opts?.timeout });
+  async function execFile(cli, args, opts) {
+    calls.push({ type: "exec", cli, args: [...args], timeout: opts?.timeout });
+
+    if (cli === "ps" && psError) throw psError;
+    if (args[0] === "identify" && identifyError) throw identifyError;
+    const ownership = answerOwnershipCall(cli, args, {
+      ancestorCommands,
+      identify,
+    });
+    if (ownership) return ownership;
 
     if (args[0] === "--version") {
       return { stdout: `${version}\n`, stderr: "" };
@@ -486,6 +511,146 @@ test(
     assert.ok(probe, "one read-only workspace probe");
     assert.equal(probe.args[probe.args.indexOf("--workspace") + 1], FAKE_WS_ID);
     assert.equal(probe.args.includes("--pane"), false);
+  }),
+);
+
+test(
+  "detect: available when the cmux app is an ancestor of this process",
+  withSocketPath(async () => {
+    const { execFile, spawn, calls } = makeFakeIo();
+    const backend = createCmuxBackend({ execFile, spawn });
+
+    assert.deepEqual(await backend.detect(), {
+      available: true,
+      version: "cmux 0.64.22",
+      capabilities: ["events.v1"],
+    });
+    // Asking for the caller would resolve it from the same inherited
+    // variables this check exists to distrust.
+    assert.deepEqual(calls.find((c) => c.args[0] === "identify")?.args, [
+      "identify",
+      "--json",
+      "--no-caller",
+    ]);
+    assert.equal(calls.filter((c) => c.cli === "ps").length, 1);
+  }),
+);
+
+test(
+  "detect: unavailable with a reason when the CMUX_* variables were only inherited",
+  withSocketPath(async () => {
+    // A terminal server started from a cmux surface hands that surface's
+    // variables to every terminal it makes; the workspace is still open.
+    const { execFile, spawn } = makeFakeIo({
+      ancestorCommands: [
+        "/opt/homebrew/bin/fish",
+        "/usr/local/bin/terminal-server",
+      ],
+    });
+    const backend = createCmuxBackend({ execFile, spawn });
+
+    assert.deepEqual(await backend.detect(), {
+      available: false,
+      version: "cmux 0.64.22",
+      capabilities: ["events.v1"],
+      reason: `cmux did not start this terminal: ${FAKE_CMUX_APP} is not an ancestor of this process, so its CMUX_* variables were inherited; set PI_COHORT_MUX_CMUX_TRUST_ENV=1 if this terminal is inside that cmux surface`,
+    });
+  }),
+);
+
+test(
+  "detect: trustEnvironment accepts inherited CMUX_* variables without proof",
+  withSocketPath(async () => {
+    // tmux inside a cmux surface: the detached tmux server, not cmux, is the
+    // ancestor, yet the surface is this session's own.
+    const { execFile, spawn, calls } = makeFakeIo({
+      ancestorCommands: ["/opt/homebrew/bin/fish", "/opt/homebrew/bin/tmux"],
+    });
+    const backend = createCmuxBackend({
+      execFile,
+      spawn,
+      trustEnvironment: true,
+    });
+
+    assert.deepEqual(await backend.detect(), {
+      available: true,
+      version: "cmux 0.64.22",
+      capabilities: ["events.v1"],
+    });
+    const asked = calls
+      .filter((call) => call.type === "exec")
+      .map((call) => (call.cli === "ps" ? "ps" : call.args[0]));
+    assert.equal(asked.includes("ps"), false);
+    assert.equal(asked.includes("identify"), false);
+  }),
+);
+
+test(
+  "detect: PI_COHORT_MUX_CMUX_TRUST_ENV=1 accepts inherited CMUX_* variables",
+  withSocketPath(async () => {
+    const restore = setEnvironment({ PI_COHORT_MUX_CMUX_TRUST_ENV: "1" });
+    try {
+      const { execFile, spawn } = makeFakeIo({
+        ancestorCommands: ["/opt/homebrew/bin/fish", "/opt/homebrew/bin/tmux"],
+      });
+      const backend = createCmuxBackend({ execFile, spawn });
+
+      assert.equal((await backend.detect()).available, true);
+    } finally {
+      restore();
+    }
+  }),
+);
+
+test(
+  "detect: unavailable when cmux does not say where its app runs from",
+  withSocketPath(async () => {
+    const { execFile, spawn, calls } = makeFakeIo({
+      identify: { version: "0.64.22" },
+    });
+    const backend = createCmuxBackend({ execFile, spawn });
+
+    const result = await backend.detect();
+    assert.equal(result.available, false);
+    assert.equal(
+      result.reason,
+      "cannot prove cmux started this terminal: cmux identify reported no app_executable_path",
+    );
+    assert.equal(calls.filter((c) => c.cli === "ps").length, 0);
+  }),
+);
+
+test(
+  "detect: unavailable when cmux identify fails",
+  withSocketPath(async () => {
+    const { execFile, spawn } = makeFakeIo({
+      identifyError: new Error("identify timed out"),
+    });
+    const backend = createCmuxBackend({ execFile, spawn });
+
+    const result = await backend.detect();
+    assert.equal(result.available, false);
+    assert.equal(
+      result.reason,
+      "cannot prove cmux started this terminal: cmux identify failed: identify timed out",
+    );
+  }),
+);
+
+test(
+  "detect: unavailable when this process's ancestors cannot be listed",
+  withSocketPath(async () => {
+    const { execFile, spawn } = makeFakeIo({
+      psError: new Error("spawn ps ENOENT"),
+    });
+    const backend = createCmuxBackend({ execFile, spawn });
+
+    const result = await backend.detect();
+    assert.equal(result.available, false);
+    assert.equal(
+      result.reason,
+      "cannot prove cmux started this terminal: spawn ps ENOENT",
+    );
   }),
 );
 

@@ -6,6 +6,27 @@ version and release together.
 
 ## [Unreleased]
 
+### Fixed
+
+- `pi-cohort-mux-cmux`: the adapter no longer claims a terminal that only
+  inherited cmux's `CMUX_*` variables, such as one made by a terminal server
+  that was started from a cmux surface. It now detects cmux only when the cmux
+  app is an ancestor of the pi process, and says why when it is not
+  ([#23](https://github.com/nertzy/pi-cohort-mux/issues/23)).
+
+### Changed
+
+- `pi-cohort-mux-cmux`: tmux inside a cmux surface is no longer detected on
+  its own, because the tmux server is not a descendant of cmux. Set
+  `PI_COHORT_MUX_CMUX_TRUST_ENV=1` in that session to keep using the adapter.
+
+### Added
+
+- `pi-cohort-mux-cmux`: `PI_COHORT_MUX_CMUX_TRUST_ENV=1` accepts the `CMUX_*`
+  variables without the ancestor check.
+- `pi-cohort-mux`: `processAncestors()` lists the processes a process descends
+  from, for adapters that prove their multiplexer started the terminal.
+
 ## [0.2.0] - 2026-11-13
 
 ### Changed
