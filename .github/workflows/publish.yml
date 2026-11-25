@@ -53,7 +53,7 @@ jobs:
       # own directory, the shared mechanics before the adapters that pin them.
       - name: Stage every package
         run: |
-          for package in pi-cohort-mux pi-cohort-mux-cmux pi-cohort-mux-herdr; do
+          for package in pi-cohort-mux pi-cohort-mux-cmux pi-cohort-mux-herdr pi-cohort-mux-herdr-core; do
             (cd "packages/$package" && npm stage publish --access public --provenance)
           done
 

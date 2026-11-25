@@ -16,6 +16,9 @@ env:
   PI_VERSION: 1.5.2
   CMUX_VERSION: 0.65.2
   HERDR_VERSION: 0.9.5
+  HERDR_CORE_VERSION: 0.1.22
+  # From https://releases.herdr.dev/core/<version>/manifest.json, linux-x86_64.
+  HERDR_CORE_SHA256: 3054ec3992ce80c5715d721caa9dcefa6056721d15dc113f4750afce763ba5df
 
 jobs:
   lint:
@@ -93,6 +96,36 @@ jobs:
           node --test --test-concurrency=1 test/production-herdr-smoke.test.mjs | tee "$RUNNER_TEMP/herdr-tests.log"
           # A missing prerequisite skips rather than fails; treat it as a failure here.
           grep -q '^ℹ skipped 0$' "$RUNNER_TEMP/herdr-tests.log"
+
+  herdr-core:
+    name: Linux · real herdr-core
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.x
+          cache: npm
+      - run: npm ci
+      - name: Install herdr-core
+        run: |
+          mkdir -p "$RUNNER_TEMP/herdr-core"
+          curl -fsSLo "$RUNNER_TEMP/herdr-core.tar.gz" "https://releases.herdr.dev/core/$HERDR_CORE_VERSION/herdr-core-linux-x86_64.tar.gz"
+          echo "$HERDR_CORE_SHA256  $RUNNER_TEMP/herdr-core.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/herdr-core.tar.gz" -C "$RUNNER_TEMP/herdr-core" herdr-core
+          echo "$RUNNER_TEMP/herdr-core" >> "$GITHUB_PATH"
+      - run: herdr-core --version
+      - name: Test against real herdr-core
+        shell: bash
+        env:
+          PI_COHORT_MUX_PRODUCTION_HERDR_CORE_SMOKE: "1"
+        run: |
+          # Each test starts its own core under a temporary HC_SESSION and XDG directories.
+          node --test --test-concurrency=1 test/production-herdr-core-smoke.test.mjs | tee "$RUNNER_TEMP/herdr-core-tests.log"
+          # A missing prerequisite skips rather than fails; treat it as a failure here.
+          grep -q '^ℹ skipped 0$' "$RUNNER_TEMP/herdr-core-tests.log"
 
   cmux:
     name: macOS · real cmux

@@ -4,15 +4,23 @@
 [![pi-cohort-mux on npm](https://img.shields.io/npm/v/pi-cohort-mux?label=pi-cohort-mux)](https://www.npmjs.com/package/pi-cohort-mux)
 [![pi-cohort-mux-cmux on npm](https://img.shields.io/npm/v/pi-cohort-mux-cmux?label=pi-cohort-mux-cmux)](https://www.npmjs.com/package/pi-cohort-mux-cmux)
 [![pi-cohort-mux-herdr on npm](https://img.shields.io/npm/v/pi-cohort-mux-herdr?label=pi-cohort-mux-herdr)](https://www.npmjs.com/package/pi-cohort-mux-herdr)
+[![pi-cohort-mux-herdr-core on npm](https://img.shields.io/npm/v/pi-cohort-mux-herdr-core?label=pi-cohort-mux-herdr-core)](https://www.npmjs.com/package/pi-cohort-mux-herdr-core)
 [![License: MIT](https://img.shields.io/npm/l/pi-cohort-mux)](LICENSE)
 
 > Experimental companion for [jjuraszek/pi-cohort](https://github.com/jjuraszek/pi-cohort).
 
 This workspace contains a reusable mux mechanics package (`pi-cohort-mux`) and
-thin adapters for [cmux](https://github.com/manaflow-ai/cmux)
-(`pi-cohort-mux-cmux`) and [herdr](https://github.com/herdrdev/herdr)
-(`pi-cohort-mux-herdr`), without duplicating Cohort orchestration. Pane command
-text and persistent environment files must never contain secrets.
+thin adapters, without duplicating Cohort orchestration. Pane command text and
+persistent environment files must never contain secrets.
+
+| You run pi in                                                                                     | Install                    | Backend      |
+| ------------------------------------------------------------------------------------------------- | -------------------------- | ------------ |
+| [cmux](https://github.com/manaflow-ai/cmux)                                                       | `pi-cohort-mux-cmux`       | `cmux`       |
+| [herdr](https://github.com/herdrdev/herdr), the terminal multiplexer                              | `pi-cohort-mux-herdr`      | `herdr`      |
+| The Herdr app, whose terminals run in [herdr-core](https://github.com/herdrdev/herdr-core) (`hc`) | `pi-cohort-mux-herdr-core` | `herdr-core` |
+
+herdr and herdr-core are different programs with different protocols. A
+terminal in the Herdr app is not a herdr pane, so each needs its own adapter.
 
 ## Installation
 
@@ -22,19 +30,21 @@ Install `pi-cohort`, then the adapter for each multiplexer you use:
 pi install npm:pi-cohort
 pi install npm:pi-cohort-mux-cmux
 pi install npm:pi-cohort-mux-herdr
+pi install npm:pi-cohort-mux-herdr-core
 ```
 
 Run `/reload` in existing sessions, or start new ones. The adapters need
 Node.js 26 or newer.
 
-Each adapter supports `pi-cohort` 7.x and 8.x and peer-depends on it, so it registers
+Each adapter supports `pi-cohort` 7.x and 8.x (`pi-cohort-mux-herdr-core` needs
+7.6.1 or newer) and peer-depends on it, so it registers
 with the host's copy instead of installing its own. Install an adapter
 entrypoint only; each adapter declares `pi-cohort-mux` as its dependency.
 Upstream `pi-cohort` remains the separately activated host and owns backend selection,
 orchestration, control, reporting, and detached reload.
 
-In Pi's transcript, an adapter adds an accent badge, `[cmux]` or `[herdr]`, to a
-`subagent` call that ran on its backend. The call's frame keeps Pi's usual
+In Pi's transcript, an adapter adds an accent badge, such as `[cmux]` or
+`[herdr-core]`, to a `subagent` call that ran on its backend. The call's frame keeps Pi's usual
 pending, success, and error colors.
 
 An adapter follows one convention: its package exports `./execution-backend`,
@@ -48,8 +58,8 @@ registration details of their own.
 
 With `pi-cohort`'s default `auto` backend selection, the first registered
 adapter that detects its mux wins. Set `pi-cohort`'s `executionBackend` to
-`cmux` or `herdr` to choose one, for example when herdr runs inside a cmux
-terminal and both detect. Since `pi-cohort` 7.6 the setting lives under
+`cmux`, `herdr`, or `herdr-core` to choose one, for example when herdr runs
+inside a cmux terminal and both detect. Since `pi-cohort` 7.6 the setting lives under
 `subagents` in Pi's `settings.json`.
 
 The cmux adapter detects cmux only when the cmux app is an ancestor of the pi
@@ -61,12 +71,19 @@ Set `PI_COHORT_MUX_CMUX_TRUST_ENV=1` where the variables are right but cmux is
 not an ancestor, such as tmux running inside a cmux surface. Set it for that
 session only, not machine-wide.
 
+The herdr-core adapter proves the same thing by process ID: herdr-core
+reports the program it started in the terminal that `HC_TERMINAL_ID` names,
+and the adapter detects herdr-core only when that program is the pi process
+or one of its ancestors.
+
 ## Placement
 
-Each adapter places children as background tabs by default, so a launch never
-changes your layout, and offers a split for children you want beside you.
-Choose per adapter with `PI_COHORT_MUX_CMUX_PLACEMENT` and
-`PI_COHORT_MUX_HERDR_PLACEMENT`.
+The cmux and herdr adapters place children as background tabs by default, so
+a launch never changes your layout, and offer a split for children you want
+beside you. The herdr-core adapter keeps children out of the window by
+default and offers a tab. Choose per adapter with
+`PI_COHORT_MUX_CMUX_PLACEMENT`, `PI_COHORT_MUX_HERDR_PLACEMENT`, and
+`PI_COHORT_MUX_HERDR_CORE_PLACEMENT`.
 
 The default is only a starting point. Pick the placement that fits the
 subagents and tools you run most:
@@ -122,6 +139,27 @@ then stops offering herdr for 60 seconds so `auto` falls back to native. One
 case stays manual: if herdr drops the connection during a `split` create, it
 never names the new pane, and no launcher runs in it yet. The adapter does not
 close panes by guess, so an idle shell pane can be left beside the caller.
+
+### herdr-core
+
+Inside a terminal of the Herdr app, or any other herdr-core terminal:
+
+- `hidden` (default): each child runs in a terminal with no tab or pane, as a
+  child of the caller's terminal. It ends when the caller's terminal ends.
+  `hc ls` lists it, and `hc attach <name>` shows it; the name starts with the
+  agent's name.
+- `tab`: the child also carries the caller's `herdr.space` label, which the
+  Herdr app turns into a tab in that space. It keeps running when the
+  caller's terminal ends. The caller's terminal must be in a space.
+
+herdr-core runs the child directly, with no login shell. A terminal whose
+child has exited stays readable until `pi-cohort` closes it, so the adapter
+reports the child's real exit code or signal.
+
+If herdr-core does not answer a create, the adapter finds the terminal by the
+label it gave that launch, ends it, and then stops offering herdr-core for 60
+seconds so `auto` falls back to native. It never ends a terminal that does not
+carry its launch label.
 
 For workspace development:
 

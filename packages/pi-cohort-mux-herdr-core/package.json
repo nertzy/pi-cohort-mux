@@ -1,0 +1,52 @@
+{
+  "name": "pi-cohort-mux-herdr-core",
+  "version": "0.2.0",
+  "description": "herdr-core execution adapter for pi-cohort (the Herdr app)",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "pi-cohort",
+    "herdr",
+    "herdr-core"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./execution-backend": "./src/herdr-core-backend.js"
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=26"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nertzy/pi-cohort-mux.git",
+    "directory": "packages/pi-cohort-mux-herdr-core"
+  },
+  "dependencies": {
+    "pi-cohort-mux": "0.2.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.85.0",
+    "pi-cohort": "^7.6.1 || ^8.0.0",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.js"
+    ]
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

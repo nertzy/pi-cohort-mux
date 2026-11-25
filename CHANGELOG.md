@@ -1,8 +1,8 @@
 # Changelog
 
-Notable changes to `pi-cohort-mux`, `pi-cohort-mux-cmux`, and
-`pi-cohort-mux-herdr` are documented here. The three packages share one
-version and release together.
+Notable changes to `pi-cohort-mux`, `pi-cohort-mux-cmux`,
+`pi-cohort-mux-herdr`, and `pi-cohort-mux-herdr-core` are documented here. The
+packages share one version and release together.
 
 ## [Unreleased]
 
@@ -22,6 +22,14 @@ version and release together.
 
 ### Added
 
+- `pi-cohort-mux-herdr-core`: a new adapter for
+  [herdr-core](https://github.com/herdrdev/herdr-core), the terminal server
+  behind the Herdr app. Each `subagent` child runs in a hidden terminal under
+  the caller's, or in a tab of the caller's space with
+  `PI_COHORT_MUX_HERDR_CORE_PLACEMENT=tab`, and the adapter reports the
+  child's exit code
+  ([#25](https://github.com/nertzy/pi-cohort-mux/issues/25)). It needs
+  `pi-cohort` 7.6.1 or newer.
 - `pi-cohort-mux-cmux`: `PI_COHORT_MUX_CMUX_TRUST_ENV=1` accepts the `CMUX_*`
   variables without the ancestor check.
 - `pi-cohort-mux`: `processAncestors()` lists the processes a process descends
