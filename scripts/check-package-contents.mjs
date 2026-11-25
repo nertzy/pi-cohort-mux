@@ -13,6 +13,7 @@ const expected = {
     "src/event-queue.js": 0o644,
     "src/index.js": 0o644,
     "src/lease.js": 0o644,
+    "src/process-ancestry.js": 0o644,
     "src/tool-badge.js": 0o644,
   },
   "pi-cohort-mux-cmux": {
