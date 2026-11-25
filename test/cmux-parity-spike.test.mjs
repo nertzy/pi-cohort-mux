@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { processAncestors } from "pi-cohort-mux";
 import { cmuxDeadline } from "./support/cmux-deadline.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -31,25 +32,43 @@ function withDeadline(promise, message, deadline = cliDeadline) {
   ]).finally(() => clearTimeout(timer));
 }
 
+// CMUX_* variables alone do not place this session in cmux: a terminal that
+// only inherited them would run this spike against an app it is not in.
+async function startedByCmux() {
+  if (process.env.PI_COHORT_MUX_CMUX_TRUST_ENV === "1") return true;
+  const { stdout } = await cmux("identify", "--json", "--no-caller");
+  const app = JSON.parse(stdout).app_executable_path;
+  const ancestors = await processAncestors({ timeout: cliDeadline });
+  return ancestors.some((ancestor) => ancestor.command === app);
+}
+
 async function probeCmux() {
   try {
     const { stdout: version } = await cmux("--version");
     const { stdout: capabilitiesJson } = await cmux("capabilities");
     const capabilities = JSON.parse(capabilitiesJson);
-    const available =
+    const reachable =
       Boolean(process.env.CMUX_WORKSPACE_ID) &&
       Boolean(process.env.CMUX_SOCKET_PATH) &&
       capabilities.capabilities?.includes("events.v1");
-    return { available, version: version.trim(), capabilities };
+    const inherited = reachable && !(await startedByCmux());
+    return {
+      available: reachable && !inherited,
+      version: version.trim(),
+      capabilities,
+      reason: inherited
+        ? "cmux did not start this terminal; its CMUX_* variables were inherited"
+        : "CMUX_WORKSPACE_ID, CMUX_SOCKET_PATH, or the events.v1 capability is missing",
+    };
   } catch (error) {
-    return { available: false, error };
+    return { available: false, reason: error.message };
   }
 }
 
 const probe = await probeCmux();
 const skip = probe.available
   ? false
-  : `real public cmux is unreachable from this session (events.v1/CMUX_WORKSPACE_ID prerequisite missing): ${probe.error?.message ?? "not inside a cmux session"}`;
+  : `real public cmux is not exercised from this session: ${probe.reason}`;
 
 function subscribe(names) {
   const args = ["events", "--no-heartbeat"];

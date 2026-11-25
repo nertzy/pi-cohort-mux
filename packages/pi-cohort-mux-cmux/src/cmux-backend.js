@@ -67,6 +67,7 @@ import {
   createEventQueue,
   createLease,
   environmentBootstrapPath,
+  processAncestors,
   serializeEnvironment,
 } from "pi-cohort-mux";
 
@@ -78,6 +79,8 @@ const ORPHAN_GRACE_MS = 3_000;
 const SETTLE_DEADLINE_MS = 500;
 const COOLDOWN_MS = 60_000;
 const PLACEMENTS = ["tab", "split"];
+const TRUST_HINT =
+  "; set PI_COHORT_MUX_CMUX_TRUST_ENV=1 if this terminal is inside that cmux surface";
 const BOOTSTRAP_PATH = environmentBootstrapPath;
 const LAUNCHER_PATH = fileURLToPath(
   new URL("./surface-launch.sh", import.meta.url),
@@ -460,6 +463,10 @@ function recordedExitStatus(exitDir) {
  * @param {number} [options.settleDeadlineMs] How long tab placement waits for
  *   cmux to list a child's tab before leaving the pane's selection alone (for
  *   testing).
+ * @param {boolean} [options.trustEnvironment] Accept the CMUX_* variables
+ *   without proving cmux started this terminal. Defaults to
+ *   PI_COHORT_MUX_CMUX_TRUST_ENV=1, for a session cmux hosts but did not
+ *   start: tmux inside a surface, or a job handed a workspace.
  * @param {number} [options.cooldownMs] How long detect() reports cmux
  *   unavailable after a create timed out (for testing).
  * @param {Function} [options.now] Clock for the cool-down (for testing).
@@ -469,6 +476,7 @@ export function createCmuxExecutionBackend({
   execFile: execFileFn = (...args) => execFile(...args),
   spawn: spawnFn = spawnProcess,
   placement = process.env.PI_COHORT_MUX_CMUX_PLACEMENT || "tab",
+  trustEnvironment = process.env.PI_COHORT_MUX_CMUX_TRUST_ENV === "1",
   cliDeadlineMs = CLI_DEADLINE_MS,
   ackDeadlineMs = ACK_DEADLINE_MS,
   handoffDeadlineMs = HANDOFF_DEADLINE_MS,
@@ -517,6 +525,42 @@ export function createCmuxExecutionBackend({
       until: now() + cooldownMs,
       reason: `cmux did not answer ${call} within its deadline (${error.message}); cooling down for ${seconds}s`,
     };
+  }
+
+  // CMUX_* variables are inherited by everything started under a surface,
+  // including a terminal server (tmux, herdr-core) that outlives it and hands
+  // them to terminals cmux never made. They name a workspace that may still be
+  // open, so the workspace probe passes too. What an inherited environment
+  // cannot fake is descent: cmux starts a surface's process itself, so the
+  // cmux app is an ancestor of everything running in one.
+  async function ownershipProblem() {
+    const unproven = (why) => `cannot prove cmux started this terminal: ${why}`;
+    let app;
+    try {
+      // --no-caller: the caller would be resolved from those same variables.
+      const { stdout } = await execFileFn(
+        cli,
+        ["identify", "--json", "--no-caller"],
+        { timeout: cliDeadlineMs },
+      );
+      app = JSON.parse(stdout).app_executable_path;
+    } catch (error) {
+      return unproven(`cmux identify failed: ${error.message}`);
+    }
+    if (typeof app !== "string" || app === "")
+      return unproven("cmux identify reported no app_executable_path");
+    let ancestors;
+    try {
+      ancestors = await processAncestors({
+        execFile: execFileFn,
+        timeout: cliDeadlineMs,
+      });
+    } catch (error) {
+      return unproven(error.message);
+    }
+    if (ancestors.some((ancestor) => ancestor.command === app))
+      return undefined;
+    return `cmux did not start this terminal: ${app} is not an ancestor of this process, so its CMUX_* variables were inherited${TRUST_HINT}`;
   }
 
   // Helper-pane selection and surface creation run one launch at a time, so
@@ -923,6 +967,9 @@ export function createCmuxExecutionBackend({
         if (!available) return { available, version, capabilities };
         const reason = parentSurfaceError();
         if (reason) return { available: false, version, capabilities, reason };
+        const unowned = trustEnvironment ? undefined : await ownershipProblem();
+        if (unowned)
+          return { available: false, version, capabilities, reason: unowned };
         // One read-only probe: a stale or foreign CMUX_WORKSPACE_ID would
         // otherwise surface only as a failed launch.
         try {

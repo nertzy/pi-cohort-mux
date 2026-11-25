@@ -18,5 +18,7 @@ pi install npm:pi-cohort-mux-cmux
 
 Needs `pi-cohort` 7.x or 8.x and Node.js 26 or newer. Outside cmux the adapter
 reports itself unavailable, so `pi-cohort` falls back to its native backend.
+That includes a terminal that only inherited cmux's variables; in tmux inside
+a cmux surface, set `PI_COHORT_MUX_CMUX_TRUST_ENV=1`.
 See the [repository README](https://github.com/nertzy/pi-cohort-mux#readme)
 for placement and backend selection.

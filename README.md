@@ -52,6 +52,15 @@ adapter that detects its mux wins. Set `pi-cohort`'s `executionBackend` to
 terminal and both detect. Since `pi-cohort` 7.6 the setting lives under
 `subagents` in Pi's `settings.json`.
 
+The cmux adapter detects cmux only when the cmux app is an ancestor of the pi
+process. cmux's `CMUX_*` variables are not proof on their own: a terminal
+server started from a cmux surface passes them to every terminal it makes, and
+children would then open in a cmux workspace you are not looking at.
+
+Set `PI_COHORT_MUX_CMUX_TRUST_ENV=1` where the variables are right but cmux is
+not an ancestor, such as tmux running inside a cmux surface. Set it for that
+session only, not machine-wide.
+
 ## Placement
 
 Each adapter places children as background tabs by default, so a launch never
