@@ -10,7 +10,8 @@ event queue, the launch lease, process ancestry, and the owner-only
 environment FIFO with its `sh` bootstrap. It does not import `pi-cohort`.
 
 Install an adapter instead, which depends on this package:
-[`pi-cohort-mux-cmux`](https://www.npmjs.com/package/pi-cohort-mux-cmux) or
-[`pi-cohort-mux-herdr`](https://www.npmjs.com/package/pi-cohort-mux-herdr).
+[`pi-cohort-mux-cmux`](https://www.npmjs.com/package/pi-cohort-mux-cmux),
+[`pi-cohort-mux-herdr`](https://www.npmjs.com/package/pi-cohort-mux-herdr), or
+[`pi-cohort-mux-herdr-core`](https://www.npmjs.com/package/pi-cohort-mux-herdr-core).
 See the [repository README](https://github.com/nertzy/pi-cohort-mux#readme)
 for the adapter convention.

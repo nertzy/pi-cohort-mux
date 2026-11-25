@@ -29,6 +29,12 @@ const expected = {
     "src/index.js": 0o644,
     "src/pane-launch.sh": 0o644,
   },
+  "pi-cohort-mux-herdr-core": {
+    ...common,
+    "src/herdr-core-backend.js": 0o644,
+    "src/herdr-core-client.js": 0o644,
+    "src/index.js": 0o644,
+  },
 };
 
 const pack = JSON.parse(

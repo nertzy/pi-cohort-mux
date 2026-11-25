@@ -1,12 +1,12 @@
 # Releasing
 
-`pi-cohort-mux`, `pi-cohort-mux-cmux`, and `pi-cohort-mux-herdr` release in
-lockstep: one version, one curated `CHANGELOG.md` section, and one immutable
+`pi-cohort-mux` and its adapters (`pi-cohort-mux-cmux`, `pi-cohort-mux-herdr`,
+and `pi-cohort-mux-herdr-core`) release in lockstep: one version, one curated `CHANGELOG.md` section, and one immutable
 `v<version>` tag. The adapters depend on the exact `pi-cohort-mux` version
 they ship with.
 
-Pushing a matching tag runs `.github/workflows/publish.yml`, which stages all
-three packages through npm trusted publishing (`npm stage publish`), the
+Pushing a matching tag runs `.github/workflows/publish.yml`, which stages
+every package through npm trusted publishing (`npm stage publish`), the
 shared mechanics first, then creates a GitHub Release from the matching
 `CHANGELOG.md` section.
 
@@ -78,7 +78,7 @@ existing package. Perform the bootstrap in this order:
    OIDC releases publish with provenance.
 
 3. With the packages now registered, configure npm trusted publishing on each
-   of the three packages for this exact repository and the `publish.yml`
+   of the packages for this exact repository and the `publish.yml`
    workflow filename. Allow only `npm stage publish` on each trust
    relationship; keep `npm publish` disabled so every release requires human
    approval.

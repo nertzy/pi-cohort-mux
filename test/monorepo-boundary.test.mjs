@@ -20,7 +20,7 @@ const core = JSON.parse(
   ),
 );
 const adapters = await Promise.all(
-  ["cmux", "herdr"].map(async (backend) => ({
+  ["cmux", "herdr", "herdr-core"].map(async (backend) => ({
     backend,
     directory: `./packages/pi-cohort-mux-${backend}`,
     manifest: JSON.parse(
@@ -56,7 +56,14 @@ test("root is a private workspace, the packages publish, and only the adapters a
       undefined,
       "the host's pi-cohort is shared, never a private copy",
     );
-    assert.equal(adapter.peerDependencies["pi-cohort"], "^7.0.0 || ^8.0.0");
+    assert.equal(
+      adapter.peerDependencies["pi-cohort"],
+      // herdr-core children keep their HC_* identity only where pi-cohort
+      // honors surfaceEnvironmentPrefixes, which arrived in 7.6.1.
+      adapter.name === "pi-cohort-mux-herdr-core"
+        ? "^7.6.1 || ^8.0.0"
+        : "^7.0.0 || ^8.0.0",
+    );
     assert.equal(
       adapter.peerDependencies["@earendil-works/pi-coding-agent"],
       ">=0.85.0",
@@ -69,6 +76,12 @@ test("each adapter default-exports its backend factory from ./execution-backend"
   assertConventionalFactory(cmux, cmux.createCmuxExecutionBackend, "cmux");
   const herdr = await import("pi-cohort-mux-herdr/execution-backend");
   assertConventionalFactory(herdr, herdr.createHerdrExecutionBackend, "herdr");
+  const herdrCore = await import("pi-cohort-mux-herdr-core/execution-backend");
+  assertConventionalFactory(
+    herdrCore,
+    herdrCore.createHerdrCoreExecutionBackend,
+    "herdr-core",
+  );
 });
 
 // pi-cohort-mux/adapter rebuilds a backend in another process from the
